@@ -51,7 +51,7 @@ def start_udp_listener():
         while True:
             try:
                 data, _ = sock.recvfrom(4096)
-            except socket.timeout:
+            except (socket.timeout, OSError):
                 break
             packets.append(data)
 

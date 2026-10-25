@@ -32,7 +32,6 @@ VK_NAMES = {
     "F12": 0x7B,
 }
 
-_HOTKEY_ID = 1
 _MOD_NOREPEAT = 0x4000
 _WM_HOTKEY = 0x0312
 
@@ -41,22 +40,29 @@ def parse_hotkey(name):
     return VK_NAMES.get((name or "").upper(), 0)
 
 
-class HotkeyListener(threading.Thread):
-    def __init__(self, vk, on_hotkey):
+class HotkeyManager(threading.Thread):
+    def __init__(self, bindings):
         super().__init__(daemon=True)
-        self.vk = vk
-        self.on_hotkey = on_hotkey
-        self.registered = False
+        self.bindings = bindings
+        self.registered = 0
 
     def run(self):
         user32 = ctypes.windll.user32
-        if not user32.RegisterHotKey(None, _HOTKEY_ID, _MOD_NOREPEAT, self.vk):
+        for idx, (vk, _cb) in enumerate(self.bindings, start=1):
+            if not vk:
+                continue
+            if user32.RegisterHotKey(None, idx, _MOD_NOREPEAT, vk):
+                self.registered += 1
+        if not self.registered:
             return
-        self.registered = True
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
             if msg.message == _WM_HOTKEY:
-                self.on_hotkey()
+                idx = msg.wParam - 1
+                if 0 <= idx < len(self.bindings):
+                    vk, cb = self.bindings[idx]
+                    if vk:
+                        cb()
 
 
 def parse_args(argv=None):
@@ -81,6 +87,12 @@ def parse_args(argv=None):
                    help="path to VRto3D default_config.json (used by image-parameter keys)")
     p.add_argument("--recenter-hotkey", default="F9",
                    help="global hotkey for recenter (default F9; works while game has focus)")
+    p.add_argument("--axis-hotkey", default="F10",
+                   help="global hotkey to cycle gyro axis mapping (default F10)")
+    p.add_argument("--invert-yaw-hotkey", default="F11",
+                   help="global hotkey to toggle yaw sign (default F11)")
+    p.add_argument("--invert-pitch-hotkey", default="F12",
+                   help="global hotkey to toggle pitch sign (default F12)")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -178,21 +190,53 @@ def main(argv=None):
         print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
 
     recenter_flag = threading.Event()
+    axis_flag = threading.Event()
+    yaw_flag = threading.Event()
+    pitch_flag = threading.Event()
 
-    def _hotkey_recenter():
-        recenter_flag.set()
+    def cycle_axis():
+        maps = list(AXIS_MAPS)
+        idx = maps.index(orientation.axis_map)
+        orientation.set_axis_map(maps[(idx + 1) % len(maps)])
+        orientation.recenter()
+        print(
+            f">>> Achsen-Mapping = {orientation.axis_map} "
+            f"(pitch/yaw/roll <- {AXIS_MAPS[orientation.axis_map]}) – recenter"
+        )
 
-    vk = parse_hotkey(args.recenter_hotkey)
+    def toggle_yaw():
+        orientation.set_invert_yaw(not orientation.invert_yaw)
+        orientation.recenter()
+        print(f">>> Yaw-Vorzeichen = {'invertiert' if orientation.invert_yaw else 'normal'} – recenter")
+
+    def toggle_pitch():
+        orientation.set_invert_pitch(not orientation.invert_pitch)
+        orientation.recenter()
+        print(f">>> Pitch-Vorzeichen = {'invertiert' if orientation.invert_pitch else 'normal'} – recenter")
+
+    hotkey_names = [
+        args.recenter_hotkey,
+        args.axis_hotkey,
+        args.invert_yaw_hotkey,
+        args.invert_pitch_hotkey,
+    ]
+    bindings = [
+        (parse_hotkey(hotkey_names[0]), lambda: recenter_flag.set()),
+        (parse_hotkey(hotkey_names[1]), lambda: axis_flag.set()),
+        (parse_hotkey(hotkey_names[2]), lambda: yaw_flag.set()),
+        (parse_hotkey(hotkey_names[3]), lambda: pitch_flag.set()),
+    ]
     hotkey = None
-    if vk and os.name == "nt":
-        hotkey = HotkeyListener(vk, _hotkey_recenter)
+    if os.name == "nt":
+        hotkey = HotkeyManager(bindings)
         hotkey.start()
         time.sleep(0.1)
         if hotkey.registered:
-            print(f"Globaler Recenter-Hotkey aktiv: {args.recenter_hotkey}")
+            active = [n for n, (vk, _cb) in zip(hotkey_names, bindings) if vk]
+            print(f"Globale Hotkeys aktiv: {', '.join(active)}")
         else:
             hotkey = None
-            print(f"(Hinweis: Hotkey {args.recenter_hotkey} konnte nicht registriert werden)")
+            print("(Hinweis: Keine Hotkeys konnten registriert werden)")
 
     print_help()
 
@@ -207,6 +251,15 @@ def main(argv=None):
             recenter_flag.clear()
             orientation.recenter()
             print(">>> Recenter (Hotkey): geradeaus ausgerichtet")
+        if axis_flag.is_set():
+            axis_flag.clear()
+            cycle_axis()
+        if yaw_flag.is_set():
+            yaw_flag.clear()
+            toggle_yaw()
+        if pitch_flag.is_set():
+            pitch_flag.clear()
+            toggle_pitch()
 
         for ch in poll_keys():
             if ch == "r":
@@ -252,22 +305,11 @@ def main(argv=None):
                 edit_param = None
                 print(">>> Bild-Param-Modus beendet")
             elif ch == "a":
-                maps = list(AXIS_MAPS)
-                idx = maps.index(orientation.axis_map)
-                orientation.set_axis_map(maps[(idx + 1) % len(maps)])
-                orientation.recenter()
-                print(
-                    f">>> Achsen-Mapping = {orientation.axis_map} "
-                    f"(pitch/yaw/roll <- {AXIS_MAPS[orientation.axis_map]}) – recenter"
-                )
+                cycle_axis()
             elif ch == "y":
-                orientation.set_invert_yaw(not orientation.invert_yaw)
-                orientation.recenter()
-                print(f">>> Yaw-Vorzeichen = {'invertiert' if orientation.invert_yaw else 'normal'} – recenter")
+                toggle_yaw()
             elif ch == "p":
-                orientation.set_invert_pitch(not orientation.invert_pitch)
-                orientation.recenter()
-                print(f">>> Pitch-Vorzeichen = {'invertiert' if orientation.invert_pitch else 'normal'} – recenter")
+                toggle_pitch()
 
         if args.dry_run:
             if count == 1 or count % 100 == 0:
