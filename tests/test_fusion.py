@@ -74,7 +74,7 @@ def test_gain_scales_rates():
     o = ComplementaryOrientation(use_gravity_ref=False)
     o.set_gain(2.0)
     o.update(1.0, (0.0, math.radians(10.0), 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - 20.0) < 1e-6
+    assert abs(o.pitch_deg - 20.0) < 1e-6
 
 
 def test_gain_minimum():
@@ -86,30 +86,31 @@ def test_gain_minimum():
 def test_default_maps_gyro_y_to_yaw():
     o = ComplementaryOrientation(use_gravity_ref=False)
     o.update(1.0, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - 30.0) < 1e-6
+    assert abs(o.pitch_deg - 30.0) < 1e-6
+    assert abs(o.yaw_deg) < 1e-6
     assert abs(o.roll_deg) < 1e-6
 
 
 def test_swap_yz_maps_gyro_z_to_yaw():
     o = ComplementaryOrientation(use_gravity_ref=False, axis_map="swap_yz")
     o.update(1.0, (0.0, 0.0, math.radians(30.0)), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - 30.0) < 1e-6
+    assert abs(o.pitch_deg - 30.0) < 1e-6
     assert abs(o.roll_deg) < 1e-6
-    o.update(1.0, (0.0, math.radians(45.0), 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.roll_deg - 45.0) < 1e-6
-    assert abs(o.yaw_deg - 30.0) < 1e-6
+    o2 = ComplementaryOrientation(use_gravity_ref=False, axis_map="swap_yz")
+    o2.update(1.0, (0.0, math.radians(45.0), 0.0), (0.0, 0.0, 9.81))
+    assert abs(o2.yaw_deg - 45.0) < 1e-6
 
 
 def test_invert_yaw():
     o = ComplementaryOrientation(use_gravity_ref=False, invert_yaw=True)
     o.update(1.0, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg + 30.0) < 1e-6
+    assert abs(o.pitch_deg + 30.0) < 1e-6
 
 
 def test_invert_pitch():
     o = ComplementaryOrientation(use_gravity_ref=False, invert_pitch=True)
     o.update(1.0, (math.radians(30.0), 0.0, 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.pitch_deg + 30.0) < 1e-6
+    assert abs(o.roll_deg + 30.0) < 1e-6
 
 
 def test_set_axis_map_rejects_unknown():
@@ -132,8 +133,9 @@ def test_yz_tilt_decouples_yaw_from_roll():
     gy = math.radians(amp * math.cos(math.atan2(0.5, 1.0)))
     gz = math.radians(-amp * math.sin(math.atan2(0.5, 1.0)))
     o.update(1.0, (0.0, gy, gz), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - amp) < 1e-6
+    assert abs(o.pitch_deg - amp) < 1e-6
     assert abs(o.roll_deg) < 1e-6
+    assert abs(o.yaw_deg) < 1e-6
 
 
 def _from_euler_angles_deg(roll, pitch, yaw):
@@ -162,14 +164,14 @@ def test_quaternion_helpers_roundtrip():
 def test_yz_tilt_only_with_default_map():
     o = ComplementaryOrientation(use_gravity_ref=False, axis_map="swap_yz", yz_tilt_deg=30.0)
     o.update(1.0, (0.0, 0.0, math.radians(30.0)), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - 30.0) < 1e-6
+    assert abs(o.pitch_deg - 30.0) < 1e-6
 
 
 def test_quaternion_mode_no_roll_drift_on_return_to_center():
     o = ComplementaryOrientation(use_gravity_ref=False)
     for _ in range(90):
         o.update(0.01, (0.0, math.radians(100.0), 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - 90.0) < 0.5
+    assert abs(o.pitch_deg - 90.0) < 0.5
     for _ in range(90):
         o.update(0.01, (0.0, math.radians(-100.0), 0.0), (0.0, 0.0, 9.81))
     for _ in range(90):
@@ -181,20 +183,20 @@ def test_quaternion_mode_no_roll_drift_on_return_to_center():
     assert abs(o.roll_deg) < 0.5
 
 
-def test_quaternion_mode_pure_pitch_creates_no_roll():
+def test_quaternion_mode_pure_nick_rotates_around_x():
     o = ComplementaryOrientation(use_gravity_ref=False)
     for _ in range(70):
         o.update(0.01, (math.radians(100.0), 0.0, 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.pitch_deg - 70.0) < 0.5
-    assert abs(o.roll_deg) < 0.5
+    assert abs(o.roll_deg - 70.0) < 0.5
+    assert abs(o.pitch_deg) < 0.5
     assert abs(o.yaw_deg) < 0.5
 
 
 def test_rate_smoothing_limits_initial_jump():
     o = ComplementaryOrientation(use_gravity_ref=False, rate_smoothing=0.2)
     o.update(1.0, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
-    assert o.yaw_deg < 15.0
+    assert o.pitch_deg < 15.0
     o.recenter()
     for _ in range(1000):
         o.update(0.001, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - 30.0) < 1.0
+    assert abs(o.pitch_deg - 30.0) < 1.0

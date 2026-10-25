@@ -149,9 +149,13 @@ class ComplementaryOrientation:
         pitch_rate, yaw_rate, roll_rate = rates_deg
         if dt <= 0.0:
             return
-        roll = math.radians(roll_rate) * dt
-        pitch = math.radians(pitch_rate) * dt
-        yaw = math.radians(yaw_rate) * dt
+        # Die OpenTrack-Euler-Konvention von VRto3D ist
+        # q = F(roll, pitch, yaw) = Rz(yaw)·Ry(pitch)·Rx(roll).
+        # Physikalische Zuordnung: Nicken (pitch_rate) rotiert um X,
+        # Gieren (yaw_rate) um Y, Neigen (roll_rate) um Z.
+        roll = math.radians(pitch_rate) * dt
+        pitch = math.radians(yaw_rate) * dt
+        yaw = math.radians(roll_rate) * dt
         if abs(roll) < 1e-12 and abs(pitch) < 1e-12 and abs(yaw) < 1e-12:
             return
         cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
