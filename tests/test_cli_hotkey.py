@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from xreal_vr_bridge.cli import (
@@ -5,6 +7,7 @@ from xreal_vr_bridge.cli import (
     load_state,
     parse_hotkey,
     parse_hotkey_ex,
+    quiet_bias_step,
     save_state,
 )
 from xreal_vr_bridge.fusion import AXIS_MAPS as FUSION_AXIS_MAPS, ComplementaryOrientation
@@ -51,3 +54,35 @@ def test_save_load_state_roundtrip():
     assert state is not None
     assert state["yz_tilt_deg"] == 32.0
     assert state["axis_map"] == "default"
+
+
+def test_quiet_bias_step_updates_after_still_window():
+    offset = 0.1  # rad/s
+    bias = (0.0, 0.0, 0.0)
+    q_state = (0, (0.0, 0.0, 0.0))
+    for _ in range(1000):
+        bias, q_state, updated = quiet_bias_step(bias, (offset, 0.0, 0.0), q_state)
+    assert updated
+    assert abs(bias[0] - offset) < 1e-9
+
+
+def test_quiet_bias_step_resets_on_motion():
+    offset = 0.1
+    bias = (0.0, 0.0, 0.0)
+    q_state = (0, (0.0, 0.0, 0.0))
+    for _ in range(500):
+        bias, q_state, _ = quiet_bias_step(bias, (offset, 0.0, 0.0), q_state)
+    bias, q_state, updated = quiet_bias_step(
+        bias, (math.radians(30.0), 0.0, 0.0), q_state
+    )
+    assert not updated
+    assert q_state[0] == 0
+
+
+def test_quiet_bias_step_uses_threshold():
+    bias = (0.0, 0.0, 0.0)
+    q_state = (0, (0.0, 0.0, 0.0))
+    for _ in range(50):
+        bias, q_state, updated = quiet_bias_step(bias, (0.0001, 0.0, 0.0), q_state)
+    assert not updated
+    assert q_state[0] == 50

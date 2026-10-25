@@ -26,6 +26,22 @@ PARAM_RANGES = {
     "fov": (40.0, 110.0, 1.0),
 }
 
+QUIET_THRESHOLD_RAD = math.radians(0.5)
+QUIET_SAMPLES = 1000
+
+
+def quiet_bias_step(bias, gyro, q_state, threshold=QUIET_THRESHOLD_RAD, samples=QUIET_SAMPLES):
+    q_count, q_sum = q_state
+    raw = tuple(g - b for g, b in zip(gyro, bias))
+    if max(map(abs, raw)) < threshold:
+        q_sum = tuple(s + g for s, g in zip(q_sum, gyro))
+        q_count += 1
+        if q_count >= samples:
+            new_bias = tuple(s / q_count for s in q_sum)
+            return new_bias, (0, (0.0, 0.0, 0.0)), True
+        return bias, (q_count, q_sum), False
+    return bias, (0, (0.0, 0.0, 0.0)), False
+
 VK_NAMES = {
     "F9": 0x78,
     "F10": 0x79,
@@ -119,6 +135,8 @@ def parse_args(argv=None):
                    help="global hotkey to decrease YZ tilt by 1 deg (default Ctrl+F10)")
     p.add_argument("--tilt-reset-hotkey", default="Ctrl+F12",
                    help="global hotkey to reset YZ tilt to 0 (default Ctrl+F12)")
+    p.add_argument("--disable-quiet-calib", action="store_true",
+                   help="disable continuous gyro bias recalibration while the head is still")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -271,12 +289,22 @@ def run_stream(sock, args, orientation, bias, flags):
     last_packet = last
     count = 0
     t_start = last
+    q_state = (0, (0.0, 0.0, 0.0))
+    quiet_calib = not args.disable_quiet_calib
 
     try:
         for frame in frame_stream(sock):
             now = time.monotonic()
             dt = max(1e-4, min(0.05, now - last))
             last = now
+            if quiet_calib:
+                bias, q_state, updated = quiet_bias_step(bias, frame.gyro, q_state)
+                if updated:
+                    print(
+                        f"[calib] Gyro-Bias während Stillstand aktualisiert: "
+                        f"{bias[0]:+.5f}, {bias[1]:+.5f}, {bias[2]:+.5f} rad/s",
+                        flush=True,
+                    )
             orientation.update(dt, frame.gyro, frame.accel, bias)
             count += 1
 
