@@ -8,7 +8,7 @@ import threading
 import time
 from ctypes import wintypes
 
-from .fusion import ComplementaryOrientation, GyroBias
+from .fusion import AXIS_MAPS, ComplementaryOrientation, GyroBias
 from .opentrack import pack_opentrack
 from .protocol import frame_stream
 

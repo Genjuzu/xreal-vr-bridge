@@ -1,6 +1,14 @@
 import pytest
 
 from xreal_vr_bridge.cli import HotkeyManager, parse_hotkey
+from xreal_vr_bridge.fusion import AXIS_MAPS as FUSION_AXIS_MAPS
+
+
+def test_cli_imports_axis_maps():
+    from xreal_vr_bridge import cli
+
+    assert hasattr(cli, "AXIS_MAPS")
+    assert cli.AXIS_MAPS is FUSION_AXIS_MAPS
 
 
 def test_parse_hotkey_names():
