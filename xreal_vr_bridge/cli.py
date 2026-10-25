@@ -1,9 +1,12 @@
 import argparse
+import ctypes
 import json
 import os
 import socket
 import tempfile
+import threading
 import time
+from ctypes import wintypes
 
 from .fusion import ComplementaryOrientation, GyroBias
 from .opentrack import pack_opentrack
@@ -21,6 +24,39 @@ PARAM_RANGES = {
     "convergence": (0.1, 10.0, 0.25),
     "fov": (40.0, 110.0, 1.0),
 }
+
+VK_NAMES = {
+    "F9": 0x78,
+    "F10": 0x79,
+    "F11": 0x7A,
+    "F12": 0x7B,
+}
+
+_HOTKEY_ID = 1
+_MOD_NOREPEAT = 0x4000
+_WM_HOTKEY = 0x0312
+
+
+def parse_hotkey(name):
+    return VK_NAMES.get((name or "").upper(), 0)
+
+
+class HotkeyListener(threading.Thread):
+    def __init__(self, vk, on_hotkey):
+        super().__init__(daemon=True)
+        self.vk = vk
+        self.on_hotkey = on_hotkey
+        self.registered = False
+
+    def run(self):
+        user32 = ctypes.windll.user32
+        if not user32.RegisterHotKey(None, _HOTKEY_ID, _MOD_NOREPEAT, self.vk):
+            return
+        self.registered = True
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            if msg.message == _WM_HOTKEY:
+                self.on_hotkey()
 
 
 def parse_args(argv=None):
@@ -43,6 +79,8 @@ def parse_args(argv=None):
                    help="do not recenter automatically after bias calibration")
     p.add_argument("--vrto3d-config", default=DEFAULT_VRTO3D_CONFIG,
                    help="path to VRto3D default_config.json (used by image-parameter keys)")
+    p.add_argument("--recenter-hotkey", default="F9",
+                   help="global hotkey for recenter (default F9; works while game has focus)")
     return p.parse_args(argv)
 
 
@@ -122,6 +160,23 @@ def main(argv=None):
     if vr_cfg is None:
         print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
 
+    recenter_flag = threading.Event()
+
+    def _hotkey_recenter():
+        recenter_flag.set()
+
+    vk = parse_hotkey(args.recenter_hotkey)
+    hotkey = None
+    if vk and os.name == "nt":
+        hotkey = HotkeyListener(vk, _hotkey_recenter)
+        hotkey.start()
+        time.sleep(0.1)
+        if hotkey.registered:
+            print(f"Globaler Recenter-Hotkey aktiv: {args.recenter_hotkey}")
+        else:
+            hotkey = None
+            print(f"(Hinweis: Hotkey {args.recenter_hotkey} konnte nicht registriert werden)")
+
     print_help()
 
     for frame in frame_stream(sock):
@@ -130,6 +185,11 @@ def main(argv=None):
         last = now
         orientation.update(dt, frame.gyro, frame.accel, bias)
         count += 1
+
+        if recenter_flag.is_set():
+            recenter_flag.clear()
+            orientation.recenter()
+            print(">>> Recenter (Hotkey): geradeaus ausgerichtet")
 
         for ch in poll_keys():
             if ch == "r":

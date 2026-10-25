@@ -103,6 +103,7 @@ OpenTrack).
 | Taste | Funktion |
 |---|---|
 | `r` | **Recenter**: aktuelle Blickrichtung = geradeaus (Yaw/Pitch/Roll = 0) |
+| `F9` | **Globaler Recenter-Hotkey** (funktioniert auch, während das Spiel den Fokus hat – entspricht `r` im Bridge-Fenster) |
 | `+` / `-` | Empfindlichkeit der Kopfbewegung (0.1 Schritte; Standard 1.0) |
 | `1` / `2` / `3` | Bild-Parameter wählen: **Tiefe** (depth) / **Konvergenz** (convergence) / **FOV** (fov) – Wert wird in die VRto3D-`default_config.json` geschrieben; im Spiel `Ctrl+Shift+F10` zum Neuladen |
 | `0` | Bild-Param-Modus verlassen |
