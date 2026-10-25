@@ -1,10 +1,26 @@
 import argparse
+import json
+import os
 import socket
+import tempfile
 import time
 
 from .fusion import ComplementaryOrientation, GyroBias
 from .opentrack import pack_opentrack
 from .protocol import frame_stream
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+DEFAULT_VRTO3D_CONFIG = r"C:\Program Files (x86)\Steam\config\vrto3d\default_config.json"
+
+PARAM_RANGES = {
+    "depth": (0.0, 0.5, 0.01),
+    "convergence": (0.1, 10.0, 0.25),
+    "fov": (40.0, 110.0, 1.0),
+}
 
 
 def parse_args(argv=None):
@@ -21,7 +37,54 @@ def parse_args(argv=None):
     p.add_argument("--duration", type=float, default=0.0, help="exit after N seconds (0 = run forever)")
     p.add_argument("--dry-run", action="store_true", help="print orientation instead of sending UDP")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--no-gravity-ref", action="store_true",
+                   help="use gyro-only integration (no accelerometer pull); recommended for VR")
+    p.add_argument("--no-auto-recenter", action="store_true",
+                   help="do not recenter automatically after bias calibration")
+    p.add_argument("--vrto3d-config", default=DEFAULT_VRTO3D_CONFIG,
+                   help="path to VRto3D default_config.json (used by image-parameter keys)")
     return p.parse_args(argv)
+
+
+def print_help():
+    print("[Menü] r = Recenter (geradeaus) | h = Hilfe | q = Ende")
+    print("       +/- = Empfindlichkeit (0.1 Schritte) | 1/2/3 = Bild-Param wählen (Tiefe/Konvergenz/FOV)")
+    print("       Im Bild-Param-Modus ändern +/- den Wert (schreibt VRto3D-Config); 0 = Modus verlassen")
+
+
+def load_vrto3d_config(path):
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_vrto3d_config(path, cfg):
+    fd, tmp = tempfile.mkstemp(suffix=".json", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def poll_keys():
+    if msvcrt is None:
+        return []
+    keys = []
+    while msvcrt.kbhit():
+        ch = msvcrt.getwch()
+        keys.append(ch)
+    return keys
 
 
 def main(argv=None):
@@ -40,7 +103,11 @@ def main(argv=None):
     bias = calib.bias
     print(f"gyro bias (rad/s): {bias[0]:+.5f}, {bias[1]:+.5f}, {bias[2]:+.5f}")
 
-    orientation = ComplementaryOrientation()
+    orientation = ComplementaryOrientation(use_gravity_ref=not args.no_gravity_ref)
+    if not args.no_auto_recenter:
+        orientation.recenter()
+        print("Recenter (geradeaus): Initial ausgerichtet nach Kalibrierung")
+
     udp = None
     if not args.dry_run:
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -50,6 +117,13 @@ def main(argv=None):
     count = 0
     t_start = last
 
+    edit_param = None
+    vr_cfg = load_vrto3d_config(args.vrto3d_config)
+    if vr_cfg is None:
+        print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
+
+    print_help()
+
     for frame in frame_stream(sock):
         now = time.monotonic()
         dt = max(1e-4, min(0.05, now - last))
@@ -57,11 +131,58 @@ def main(argv=None):
         orientation.update(dt, frame.gyro, frame.accel, bias)
         count += 1
 
+        for ch in poll_keys():
+            if ch == "r":
+                orientation.recenter()
+                print(">>> Recenter: geradeaus ausgerichtet")
+            elif ch == "q":
+                print("Beende auf Wunsch")
+                sock.close()
+                if udp is not None:
+                    udp.close()
+                return
+            elif ch == "h":
+                print_help()
+            elif ch == "+" or ch == "=":
+                if edit_param and vr_cfg is not None:
+                    lo, hi, step = PARAM_RANGES[edit_param]
+                    vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, lo) + step)), 2)
+                    if save_vrto3d_config(args.vrto3d_config, vr_cfg):
+                        print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
+                    else:
+                        print(">>> Fehler beim Schreiben der VRto3D-Config")
+                else:
+                    orientation.set_gain(orientation.gain + 0.1)
+                    print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
+            elif ch == "-":
+                if edit_param and vr_cfg is not None:
+                    lo, hi, step = PARAM_RANGES[edit_param]
+                    vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, hi) - step)), 2)
+                    if save_vrto3d_config(args.vrto3d_config, vr_cfg):
+                        print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
+                    else:
+                        print(">>> Fehler beim Schreiben der VRto3D-Config")
+                else:
+                    orientation.set_gain(orientation.gain - 0.1)
+                    print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
+            elif ch in ("1", "2", "3"):
+                edit_param = ("depth", "convergence", "fov")[int(ch) - 1]
+                if vr_cfg is not None:
+                    print(f">>> Bild-Param: {edit_param} = {vr_cfg.get(edit_param)}  (+/- ändern, 0 beenden)")
+                else:
+                    print(f">>> Bild-Param: {edit_param} (Config nicht verfügbar)")
+            elif ch == "0":
+                edit_param = None
+                print(">>> Bild-Param-Modus beendet")
+            elif ch == "a":
+                orientation.recenter()
+                print(">>> Recenter: geradeaus ausgerichtet")
+
         if args.dry_run:
             if count == 1 or count % 100 == 0:
                 print(
                     f"yaw={orientation.yaw_deg:8.2f} pitch={orientation.pitch_deg:8.2f} "
-                    f"roll={orientation.roll_deg:8.2f} deg"
+                    f"roll={orientation.roll_deg:8.2f} deg gain={orientation.gain:.1f}"
                 )
         else:
             if now - last_packet >= 1.0 / max(1, args.max_rate):

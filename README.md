@@ -84,9 +84,11 @@ angelegt; für die XREAL One Pro relevant:
 Betrieb:
 
 ```powershell
-# Bridge (IMU -> OpenTrack UDP auf 127.0.0.1:4242)
+# Bridge (IMU -> OpenTrack UDP auf 127.0.0.1:4242) in eigenem Fenster:
+# --no-gravity-ref: Gyro-only-Integration (empfohlen für VR, kein Rückzug
+#   zur Schwerkraftachse), automatischer Recenter nach Kalibrierung.
 Start-Process -FilePath "C:\...\xreal-vr-bridge\.venv\Scripts\python.exe" `
-  -ArgumentList "-m","xreal_vr_bridge.cli" -WindowStyle Hidden
+  -ArgumentList "-m","xreal_vr_bridge.cli","--no-gravity-ref"
 # SteamVR starten (HMD erscheint als "Stereo3D-1234" / VRto3D)
 Start-Process "steam://run/250820"
 ```
@@ -95,6 +97,22 @@ Falls das VR-Fenster auf dem falschen Monitor erscheint: `display_index` in
 `default_config.json` anpassen (1 = erster Monitor, 2 = zweiter usw.) und
 SteamVR neu starten. `Ctrl + Home` öffnet das VRto3D-OSD (Tracking-Tab →
 OpenTrack).
+
+### Interaktives Menü der Bridge (Funktionen)
+
+| Taste | Funktion |
+|---|---|
+| `r` | **Recenter**: aktuelle Blickrichtung = geradeaus (Yaw/Pitch/Roll = 0) |
+| `+` / `-` | Empfindlichkeit der Kopfbewegung (0.1 Schritte; Standard 1.0) |
+| `1` / `2` / `3` | Bild-Parameter wählen: **Tiefe** (depth) / **Konvergenz** (convergence) / **FOV** (fov) – Wert wird in die VRto3D-`default_config.json` geschrieben; im Spiel `Ctrl+Shift+F10` zum Neuladen |
+| `0` | Bild-Param-Modus verlassen |
+| `h` | Hilfe anzeigen |
+| `q` | Bridge beenden |
+
+Tipp: Sind die Bilder leicht verschwommen oder zu „nah/fern“, mit `1`/`2`/`3`
+die Werte in kleinen Schritten anpassen und mit `Ctrl+Shift+F10` im Spiel neu
+laden. Die Anpassung wirkt global (alle Spiele), bis sie im VRto3D-OSD pro
+Spiel überschrieben wird.
 
 ## Architektur
 

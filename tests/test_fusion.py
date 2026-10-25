@@ -53,3 +53,24 @@ def test_recenter_resets():
     assert o.yaw_deg == 0.0
     assert o.pitch_deg == 0.0
     assert o.roll_deg == 0.0
+
+
+def test_gravity_ref_false_keeps_pitch():
+    o = ComplementaryOrientation(use_gravity_ref=False)
+    for _ in range(200):
+        o.update(0.01, (0.0, 0.0, 0.0), (0.0, 9.81, 0.0))
+    assert abs(o.pitch_deg) < 1e-9
+    assert abs(o.roll_deg) < 1e-9
+
+
+def test_gain_scales_rates():
+    o = ComplementaryOrientation(use_gravity_ref=False)
+    o.set_gain(2.0)
+    o.update(1.0, (0.0, math.radians(10.0), 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - 20.0) < 1e-6
+
+
+def test_gain_minimum():
+    o = ComplementaryOrientation()
+    o.set_gain(0.0)
+    assert o.gain == 0.1
