@@ -26,21 +26,21 @@ PARAM_RANGES = {
     "fov": (40.0, 110.0, 1.0),
 }
 
-QUIET_THRESHOLD_RAD = math.radians(2.0)
-QUIET_SAMPLES = 1200
+QUIET_MEAN_THRESHOLD_RAD = math.radians(0.3)
+QUIET_SAMPLES = 3000
 
 
-def quiet_bias_step(bias, gyro, q_state, threshold=QUIET_THRESHOLD_RAD, samples=QUIET_SAMPLES):
+def quiet_bias_step(bias, gyro, q_state, mean_threshold=QUIET_MEAN_THRESHOLD_RAD,
+                    samples=QUIET_SAMPLES):
     q_count, q_sum = q_state
-    raw = tuple(g - b for g, b in zip(gyro, bias))
-    if max(map(abs, raw)) < threshold:
-        q_sum = tuple(s + g for s, g in zip(q_sum, gyro))
-        q_count += 1
-        if q_count >= samples:
-            new_bias = tuple(s / q_count for s in q_sum)
-            return new_bias, (0, (0.0, 0.0, 0.0)), True
-        return bias, (q_count, q_sum), False
-    return bias, (0, (0.0, 0.0, 0.0)), False
+    q_sum = tuple(s + g for s, g in zip(q_sum, gyro))
+    q_count += 1
+    if q_count >= samples:
+        mean = tuple(s / q_count for s in q_sum)
+        if max(map(abs, mean)) < mean_threshold:
+            return mean, (0, (0.0, 0.0, 0.0)), True
+        return bias, (0, (0.0, 0.0, 0.0)), False
+    return bias, (q_count, q_sum), False
 
 VK_NAMES = {
     "F9": 0x78,
@@ -137,6 +137,8 @@ def parse_args(argv=None):
                    help="global hotkey to reset YZ tilt to 0 (default Ctrl+F12)")
     p.add_argument("--disable-quiet-calib", action="store_true",
                    help="disable continuous gyro bias recalibration while the head is still")
+    p.add_argument("--rate-smoothing", type=float, default=0.0,
+                   help="exponential rate smoothing factor 0..1 (e.g. 0.2 reduces jitter)")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -228,6 +230,7 @@ def build_orientation(args):
         invert_yaw=args.invert_yaw,
         invert_pitch=args.invert_pitch,
         yz_tilt_deg=args.yz_tilt,
+        rate_smoothing=args.rate_smoothing,
     )
 
 

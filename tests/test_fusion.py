@@ -133,3 +133,13 @@ def test_yz_tilt_only_with_default_map():
     o = ComplementaryOrientation(use_gravity_ref=False, axis_map="swap_yz", yz_tilt_deg=30.0)
     o.update(1.0, (0.0, 0.0, math.radians(30.0)), (0.0, 0.0, 9.81))
     assert abs(o.yaw_deg - 30.0) < 1e-6
+
+
+def test_rate_smoothing_limits_initial_jump():
+    o = ComplementaryOrientation(use_gravity_ref=False, rate_smoothing=0.2)
+    o.update(1.0, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
+    assert o.yaw_deg < 15.0
+    o.recenter()
+    for _ in range(1000):
+        o.update(0.001, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - 30.0) < 1.0

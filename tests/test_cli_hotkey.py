@@ -57,7 +57,7 @@ def test_save_load_state_roundtrip():
 
 
 def test_quiet_bias_step_updates_after_still_window():
-    offset = 0.001  # rad/s, below the quiet threshold
+    offset = 0.001  # rad/s, below the mean threshold
     bias = (0.0, 0.0, 0.0)
     q_state = (0, (0.0, 0.0, 0.0))
     for _ in range(10):
@@ -68,27 +68,25 @@ def test_quiet_bias_step_updates_after_still_window():
     assert abs(bias[0] - offset) < 1e-9
 
 
-def test_quiet_bias_step_resets_on_motion():
-    offset = 0.1
+def test_quiet_bias_step_no_update_when_mean_moves():
+    offset = 0.1  # rad/s, well above the mean threshold
     bias = (0.0, 0.0, 0.0)
     q_state = (0, (0.0, 0.0, 0.0))
-    for _ in range(5):
-        bias, q_state, _ = quiet_bias_step(
+    for _ in range(10):
+        bias, q_state, updated = quiet_bias_step(
             bias, (offset, 0.0, 0.0), q_state, samples=10
         )
-    bias, q_state, updated = quiet_bias_step(
-        bias, (math.radians(30.0), 0.0, 0.0), q_state, samples=10
-    )
     assert not updated
     assert q_state[0] == 0
+    assert bias == (0.0, 0.0, 0.0)
 
 
 def test_quiet_bias_step_uses_threshold():
     bias = (0.0, 0.0, 0.0)
     q_state = (0, (0.0, 0.0, 0.0))
-    for _ in range(50):
+    for _ in range(10):
         bias, q_state, updated = quiet_bias_step(
-            bias, (0.0001, 0.0, 0.0), q_state, samples=100
+            bias, (0.0001, 0.0, 0.0), q_state, samples=10
         )
-    assert not updated
-    assert q_state[0] == 50
+    assert updated
+    assert abs(bias[0] - 0.0001) < 1e-9

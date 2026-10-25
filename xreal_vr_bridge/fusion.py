@@ -36,7 +36,8 @@ class ComplementaryOrientation:
     AXIS_ROLL = 2
 
     def __init__(self, alpha=0.96, use_gravity_ref=True, axis_map="default",
-                 invert_yaw=False, invert_pitch=False, yz_tilt_deg=0.0):
+                 invert_yaw=False, invert_pitch=False, yz_tilt_deg=0.0,
+                 rate_smoothing=0.0):
         self.alpha = alpha
         self.use_gravity_ref = use_gravity_ref
         self.gain = 1.0
@@ -44,6 +45,8 @@ class ComplementaryOrientation:
         self.invert_yaw = invert_yaw
         self.invert_pitch = invert_pitch
         self.yz_tilt_deg = float(yz_tilt_deg)
+        self.rate_smoothing = max(0.0, min(1.0, float(rate_smoothing)))
+        self._smooth = None
         self.yaw_deg = 0.0
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
@@ -52,6 +55,9 @@ class ComplementaryOrientation:
 
     def set_yz_tilt(self, deg):
         self.yz_tilt_deg = float(deg)
+
+    def set_rate_smoothing(self, value):
+        self.rate_smoothing = max(0.0, min(1.0, float(value)))
 
     def set_gain(self, gain):
         self.gain = max(0.1, float(gain))
@@ -97,6 +103,17 @@ class ComplementaryOrientation:
             pitch_rate = -pitch_rate
         if self.invert_yaw:
             yaw_rate = -yaw_rate
+        if self.rate_smoothing and self._smooth is None:
+            self._smooth = (pitch_rate, yaw_rate, roll_rate)
+        if self.rate_smoothing:
+            a = self.rate_smoothing
+            sp, sy, sr = self._smooth
+            self._smooth = (
+                (1.0 - a) * sp + a * pitch_rate,
+                (1.0 - a) * sy + a * yaw_rate,
+                (1.0 - a) * sr + a * roll_rate,
+            )
+            pitch_rate, yaw_rate, roll_rate = self._smooth
         return pitch_rate, yaw_rate, roll_rate
 
     def update(self, dt, gyro, accel, bias=None):
