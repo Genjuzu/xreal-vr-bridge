@@ -125,9 +125,9 @@ def parse_args(argv=None):
                         "swap_yz: (X,Z,Y) if yaw/roll appear swapped, etc.")
     p.add_argument("--invert-yaw", action="store_true")
     p.add_argument("--invert-pitch", action="store_true")
-    p.add_argument("--yz-tilt", type=float, default=0.0,
+    p.add_argument("--yz-tilt", type=float, default=32.0,
                    help="sensor tilt in the YZ plane, degrees (only with --axis-map default). "
-                        "Set if horizontal head turns produce both yaw and roll. Use t/u in the menu.")
+                        "Measured ~32 deg on the XREAL One Pro; tune with Ctrl+F10/F11/F12.")
     return p.parse_args(argv)
 
 
@@ -154,6 +154,14 @@ def load_vrto3d_config(path):
 
 def state_path():
     return os.path.join(tempfile.gettempdir(), "xreal_bridge_state.json")
+
+
+def load_state():
+    try:
+        with open(state_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
 def save_state(orientation):
@@ -403,6 +411,10 @@ def run_stream(sock, args, orientation, bias, flags):
 
 def main(argv=None):
     args = parse_args(argv)
+
+    saved = load_state()
+    if saved is not None and "yz_tilt_deg" in saved:
+        args.yz_tilt = float(saved["yz_tilt_deg"])
 
     orientation = build_orientation(args)
     if not args.no_auto_recenter:

@@ -1,7 +1,13 @@
 import pytest
 
-from xreal_vr_bridge.cli import HotkeyManager, parse_hotkey, parse_hotkey_ex
-from xreal_vr_bridge.fusion import AXIS_MAPS as FUSION_AXIS_MAPS
+from xreal_vr_bridge.cli import (
+    HotkeyManager,
+    load_state,
+    parse_hotkey,
+    parse_hotkey_ex,
+    save_state,
+)
+from xreal_vr_bridge.fusion import AXIS_MAPS as FUSION_AXIS_MAPS, ComplementaryOrientation
 
 
 def test_cli_imports_axis_maps():
@@ -35,3 +41,13 @@ def test_parse_hotkey_ex_with_modifier():
     assert parse_hotkey_ex("CTRL+F10") == (0x79, 0x0002)
     assert parse_hotkey_ex("Ctrl+F12") == (0x7B, 0x0002)
     assert parse_hotkey_ex("Shift+F9")[1] == 0x0004
+
+
+def test_save_load_state_roundtrip():
+    o = ComplementaryOrientation(yz_tilt_deg=32.0)
+    o.set_axis_map("default")
+    save_state(o)
+    state = load_state()
+    assert state is not None
+    assert state["yz_tilt_deg"] == 32.0
+    assert state["axis_map"] == "default"
