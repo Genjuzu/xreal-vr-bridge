@@ -62,9 +62,11 @@ class ComplementaryOrientation:
     AXIS_YAW = 1
     AXIS_ROLL = 2
 
+    FUSION_MODES = ("legacy", "quat_old", "quat_new")
+
     def __init__(self, alpha=0.96, use_gravity_ref=True, axis_map="default",
                  invert_yaw=False, invert_pitch=False, yz_tilt_deg=0.0,
-                 rate_smoothing=0.0):
+                 rate_smoothing=0.0, fusion_mode="legacy"):
         self.alpha = alpha
         self.use_gravity_ref = use_gravity_ref
         self.gain = 1.0
@@ -73,6 +75,7 @@ class ComplementaryOrientation:
         self.invert_pitch = invert_pitch
         self.yz_tilt_deg = float(yz_tilt_deg)
         self.rate_smoothing = max(0.0, min(1.0, float(rate_smoothing)))
+        self.fusion_mode = fusion_mode if fusion_mode in self.FUSION_MODES else "legacy"
         self._smooth = None
         self._q = (1.0, 0.0, 0.0, 0.0)
         self.yaw_deg = 0.0
@@ -80,6 +83,10 @@ class ComplementaryOrientation:
         self.roll_deg = 0.0
         self._pitch_acc = 0.0
         self._roll_acc = 0.0
+
+    def set_fusion_mode(self, mode):
+        if mode in self.FUSION_MODES:
+            self.fusion_mode = mode
 
     def set_yz_tilt(self, deg):
         self.yz_tilt_deg = float(deg)
@@ -145,17 +152,13 @@ class ComplementaryOrientation:
             pitch_rate, yaw_rate, roll_rate = self._smooth
         return pitch_rate, yaw_rate, roll_rate
 
-    def _quat_integrate(self, dt, rates_deg):
-        pitch_rate, yaw_rate, roll_rate = rates_deg
+    def _quat_integrate(self, dt, rates_deg, args_deg):
+        roll, pitch, yaw = args_deg
         if dt <= 0.0:
             return
-        # Die OpenTrack-Euler-Konvention von VRto3D ist
-        # q = F(roll, pitch, yaw) = Rz(yaw)·Ry(pitch)·Rx(roll).
-        # Physikalische Zuordnung: Nicken (pitch_rate) rotiert um X,
-        # Gieren (yaw_rate) um Y, Neigen (roll_rate) um Z.
-        roll = math.radians(pitch_rate) * dt
-        pitch = math.radians(yaw_rate) * dt
-        yaw = math.radians(roll_rate) * dt
+        roll = math.radians(roll) * dt
+        pitch = math.radians(pitch) * dt
+        yaw = math.radians(yaw) * dt
         if abs(roll) < 1e-12 and abs(pitch) < 1e-12 and abs(yaw) < 1e-12:
             return
         cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
@@ -175,9 +178,26 @@ class ComplementaryOrientation:
 
         pitch_rate, yaw_rate, roll_rate = self._decompose(gyro, bias)
 
-        if not self.use_gravity_ref:
-            self._quat_integrate(dt, (pitch_rate, yaw_rate, roll_rate))
+        if self.fusion_mode == "legacy":
+            a = self.alpha
+            if self.use_gravity_ref:
+                gravity = math.sqrt(ax * ax + ay * ay + az * az)
+                if gravity > 1e-6:
+                    self._pitch_acc = math.degrees(math.atan2(ay, math.sqrt(ax * ax + az * az)))
+                    self._roll_acc = math.degrees(math.atan2(-ax, az))
+                self.pitch_deg = a * (self.pitch_deg + pitch_rate * dt) + (1.0 - a) * self._pitch_acc
+                self.roll_deg = a * (self.roll_deg + roll_rate * dt) + (1.0 - a) * self._roll_acc
+            else:
+                self.pitch_deg = self.pitch_deg + pitch_rate * dt
+                self.roll_deg = self.roll_deg + roll_rate * dt
+            self.yaw_deg = self.yaw_deg + yaw_rate * dt
             return
+
+        if self.fusion_mode == "quat_new":
+            args_deg = (pitch_rate, yaw_rate, roll_rate)
+        else:
+            args_deg = (roll_rate, pitch_rate, yaw_rate)
+        self._quat_integrate(dt, (pitch_rate, yaw_rate, roll_rate), args_deg)
 
         a = self.alpha
         if self.use_gravity_ref:

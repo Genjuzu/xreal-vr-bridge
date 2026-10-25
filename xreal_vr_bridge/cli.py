@@ -139,6 +139,10 @@ def parse_args(argv=None):
                    help="disable continuous gyro bias recalibration while the head is still")
     p.add_argument("--rate-smoothing", type=float, default=0.0,
                    help="exponential rate smoothing factor 0..1 (e.g. 0.2 reduces jitter)")
+    p.add_argument("--fusion-mode", default="legacy",
+                   choices=["legacy", "quat_old", "quat_new"],
+                   help="orientation integration mode (default legacy = proven axis behavior; "
+                        "quat_old/quat_new are quaternion variants; toggle live with 'f')")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -159,6 +163,7 @@ def print_help():
     print("       p = Pitch-Vorzeichen toggeln (jede Änderung recentert automatisch)")
     print("       s = Diagnose: Roh-Gyro-Werte (Grad/s) live anzeigen (zur Achsen-Prüfung)")
     print("       t/u = YZ-Tilt um +1/-1 Grad (T/U = +5/-5) – nur bei axis_map=default sinnvoll")
+    print("       f = Fusion-Modus wechseln (legacy -> quat_old -> quat_new) – recentert")
     print("       Globale Hotkeys: Ctrl+F10 = Tilt -1, Ctrl+F11 = Tilt +1, Ctrl+F12 = Tilt Reset")
 
 
@@ -191,6 +196,7 @@ def save_state(orientation):
             "invert_yaw": orientation.invert_yaw,
             "invert_pitch": orientation.invert_pitch,
             "yz_tilt_deg": orientation.yz_tilt_deg,
+            "fusion_mode": orientation.fusion_mode,
         }
         with open(state_path(), "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
@@ -231,6 +237,7 @@ def build_orientation(args):
         invert_pitch=args.invert_pitch,
         yz_tilt_deg=args.yz_tilt,
         rate_smoothing=args.rate_smoothing,
+        fusion_mode=args.fusion_mode,
     )
 
 
@@ -281,6 +288,14 @@ def run_stream(sock, args, orientation, bias, flags):
         orientation.set_yz_tilt(orientation.yz_tilt_deg + delta)
         save_state(orientation)
         print(f">>> YZ-Tilt = {orientation.yz_tilt_deg:+.1f}°")
+
+    def cycle_fusion_mode():
+        modes = list(ComplementaryOrientation.FUSION_MODES)
+        idx = modes.index(orientation.fusion_mode)
+        orientation.set_fusion_mode(modes[(idx + 1) % len(modes)])
+        orientation.recenter()
+        save_state(orientation)
+        print(f">>> Fusion-Modus = {orientation.fusion_mode} – recenter")
 
     edit_param = None
     diagnose = False
@@ -405,6 +420,8 @@ def run_stream(sock, args, orientation, bias, flags):
                     adjust_tilt(-1.0)
                 elif ch == "U":
                     adjust_tilt(-5.0)
+                elif ch == "f":
+                    cycle_fusion_mode()
 
             if args.dry_run:
                 if count == 1 or count % 100 == 0:
@@ -447,6 +464,9 @@ def main(argv=None):
     saved = load_state()
     if saved is not None and "yz_tilt_deg" in saved:
         args.yz_tilt = float(saved["yz_tilt_deg"])
+    if saved is not None and "fusion_mode" in saved:
+        if saved["fusion_mode"] in ComplementaryOrientation.FUSION_MODES:
+            args.fusion_mode = saved["fusion_mode"]
 
     orientation = build_orientation(args)
     if not args.no_auto_recenter:
