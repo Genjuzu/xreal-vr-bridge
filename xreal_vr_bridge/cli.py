@@ -139,10 +139,10 @@ def parse_args(argv=None):
                    help="disable continuous gyro bias recalibration while the head is still")
     p.add_argument("--rate-smoothing", type=float, default=0.0,
                    help="exponential rate smoothing factor 0..1 (e.g. 0.2 reduces jitter)")
-    p.add_argument("--fusion-mode", default="legacy",
-                   choices=["legacy", "quat_old", "quat_new"],
-                   help="orientation integration mode (default legacy = proven axis behavior; "
-                        "quat_old/quat_new are quaternion variants; toggle live with 'f')")
+    p.add_argument("--fusion-mode", default="ref",
+                   choices=["legacy", "quat_old", "quat_new", "ref"],
+                   help="orientation integration mode (default ref = community-validated XREAL "
+                        "pipeline with gravity alignment + bias learning; toggle live with 'f')")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -308,7 +308,7 @@ def run_stream(sock, args, orientation, bias, flags):
     count = 0
     t_start = last
     q_state = (0, (0.0, 0.0, 0.0))
-    quiet_calib = not args.disable_quiet_calib
+    quiet_calib = not args.disable_quiet_calib and orientation.fusion_mode != "ref"
 
     try:
         for frame in frame_stream(sock):

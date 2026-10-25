@@ -199,6 +199,29 @@ def test_quat_old_gyro_y_maps_to_yaw_field():
     assert abs(o.roll_deg) < 0.5
 
 
+def test_ref_mode_stable_without_motion():
+    o = ComplementaryOrientation(use_gravity_ref=False, fusion_mode="ref")
+    for _ in range(300):
+        o.update(0.01, (0.0, 0.0, 0.0), (0.0, 0.0, 9.81))
+    assert all(math.isfinite(v) for v in (o.yaw_deg, o.pitch_deg, o.roll_deg))
+    first = (o.yaw_deg, o.pitch_deg, o.roll_deg)
+    for _ in range(100):
+        o.update(0.01, (0.0, 0.0, 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - first[0]) < 1e-6
+    assert abs(o.pitch_deg - first[1]) < 1e-6
+    assert abs(o.roll_deg - first[2]) < 1e-6
+
+
+def test_ref_mode_yaw_changes_with_gyro_y():
+    o = ComplementaryOrientation(use_gravity_ref=False, fusion_mode="ref")
+    for _ in range(100):
+        o.update(0.01, (0.0, 0.0, 0.0), (0.0, 0.0, 9.81))
+    start = o.yaw_deg
+    for _ in range(100):
+        o.update(0.01, (0.0, 1.0, 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - start) > 5.0
+
+
 def test_quat_new_gyro_y_maps_to_pitch_field():
     o = ComplementaryOrientation(use_gravity_ref=False, fusion_mode="quat_new")
     for _ in range(300):

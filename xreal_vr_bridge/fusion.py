@@ -57,12 +57,50 @@ def quat_to_euler_degrees(q):
     return yaw, pitch, roll
 
 
+def vec3_cross(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def quat_rotate(q, v):
+    w, x, y, z = q
+    qv = (0.0, v[0], v[1], v[2])
+    r = quat_multiply(quat_multiply(q, qv), (w, -x, -y, -z))
+    return (r[1], r[2], r[3])
+
+
+def quat_integrate_body_rate(q, omega, dt):
+    qomega = (0.0, omega[0], omega[1], omega[2])
+    qdot = quat_multiply(q, qomega)
+    qdot = tuple(c * 0.5 for c in qdot)
+    return quat_normalize(tuple(a + b * dt for a, b in zip(q, qdot)))
+
+
+def quat_from_axis_angle(axis, angle):
+    norm = math.sqrt(sum(c * c for c in axis))
+    if norm < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    ax, ay, az = (c / norm for c in axis)
+    s = math.sin(angle * 0.5)
+    return quat_normalize((math.cos(angle * 0.5), ax * s, ay * s, az * s))
+
+
 class ComplementaryOrientation:
     AXIS_PITCH = 0
     AXIS_YAW = 1
     AXIS_ROLL = 2
 
-    FUSION_MODES = ("legacy", "quat_old", "quat_new")
+    FUSION_MODES = ("legacy", "quat_old", "quat_new", "ref")
+
+    REF_ACCEL_GAIN = 1.5
+    REF_GRAVITY_TOLERANCE = 1.5
+    REF_STATIONARY_GYRO = 0.18
+    REF_BIAS_RATE = 0.5
+    REF_MIN_DT = 0.0001
+    REF_MAX_DT = 0.05
 
     def __init__(self, alpha=0.96, use_gravity_ref=True, axis_map="default",
                  invert_yaw=False, invert_pitch=False, yz_tilt_deg=0.0,
@@ -78,6 +116,8 @@ class ComplementaryOrientation:
         self.fusion_mode = fusion_mode if fusion_mode in self.FUSION_MODES else "legacy"
         self._smooth = None
         self._q = (1.0, 0.0, 0.0, 0.0)
+        self._ref_bias = (0.0, 0.0, 0.0)
+        self._ref_initialized = False
         self.yaw_deg = 0.0
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
@@ -110,11 +150,83 @@ class ComplementaryOrientation:
 
     def recenter(self):
         self._q = (1.0, 0.0, 0.0, 0.0)
+        self._ref_bias = (0.0, 0.0, 0.0)
+        self._ref_initialized = False
         self.yaw_deg = 0.0
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
         self._pitch_acc = 0.0
         self._roll_acc = 0.0
+
+    def _ref_update(self, dt, gyro, accel):
+        gx, gy, gz = gyro
+        ax, ay, az = accel
+        gyro_rub = (gx, -gy, -gz)
+        accel_rub = (ax, -ay, -az)
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+
+        if dt > 0.25:
+            self._ref_initialized = False
+
+        if not self._ref_initialized:
+            if abs(norm - 9.81) >= self.REF_GRAVITY_TOLERANCE:
+                return
+            up = tuple(c / norm for c in accel_rub)
+            axis = vec3_cross(up, (0.0, 1.0, 0.0))
+            if up[1] < -0.9999:
+                self._q = quat_from_axis_angle((1.0, 0.0, 0.0), math.pi)
+            else:
+                self._q = quat_normalize(
+                    (1.0 + up[1], axis[0], axis[1], axis[2])
+                )
+            self._ref_initialized = True
+            self._ref_publish()
+            return
+
+        if dt < self.REF_MIN_DT or dt > self.REF_MAX_DT:
+            self._ref_publish()
+            return
+
+        if abs(norm - 9.81) < self.REF_GRAVITY_TOLERANCE:
+            if math.sqrt(gx * gx + gy * gy + gz * gz) < self.REF_STATIONARY_GYRO:
+                alpha = min(1.0, dt * self.REF_BIAS_RATE)
+                self._ref_bias = tuple(
+                    b * (1.0 - alpha) + g * alpha
+                    for b, g in zip(self._ref_bias, gyro_rub)
+                )
+
+        omega = tuple(g - b for g, b in zip(gyro_rub, self._ref_bias))
+
+        if abs(norm - 9.81) < self.REF_GRAVITY_TOLERANCE and norm > 1e-3:
+            accel_n = tuple(c / norm for c in accel_rub)
+            predicted_up = quat_rotate(
+                (self._q[0], -self._q[1], -self._q[2], -self._q[3]),
+                (0.0, 1.0, 0.0),
+            )
+            pn = math.sqrt(sum(c * c for c in predicted_up))
+            if pn > 1e-6:
+                predicted_up = tuple(c / pn for c in predicted_up)
+            corr = vec3_cross(accel_n, predicted_up)
+            omega = tuple(
+                o + c * self.REF_ACCEL_GAIN for o, c in zip(omega, corr)
+            )
+
+        self._q = quat_integrate_body_rate(self._q, omega, dt)
+        self._ref_publish()
+
+    def _ref_publish(self):
+        qw, qx, qy, qz = self._q
+        q_nwu = (qw, -qz, -qx, qy)
+        w, x, y, z = q_nwu
+        sp = 2.0 * (w * y - z * x)
+        sp = max(-1.0, min(1.0, sp))
+        self.roll_deg = math.degrees(
+            math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+        )
+        self.pitch_deg = math.degrees(math.asin(sp))
+        self.yaw_deg = math.degrees(
+            math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        )
 
     def _decompose(self, gyro, bias):
         gx, gy, gz = gyro
@@ -175,6 +287,10 @@ class ComplementaryOrientation:
 
     def update(self, dt, gyro, accel, bias=None):
         ax, ay, az = accel
+
+        if self.fusion_mode == "ref":
+            self._ref_update(dt, gyro, accel)
+            return
 
         pitch_rate, yaw_rate, roll_rate = self._decompose(gyro, bias)
 
