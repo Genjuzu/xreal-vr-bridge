@@ -116,3 +116,20 @@ def test_set_axis_map_rejects_unknown():
 
 def test_axis_maps_cover_all_permutations():
     assert sorted(AXIS_MAPS.values()) == [(0, 1, 2), (0, 2, 1), (1, 0, 2), (2, 0, 1)]
+
+
+def test_yz_tilt_decouples_yaw_from_roll():
+    amp = 30.0
+    tilt = math.degrees(math.atan2(0.5, 1.0))
+    o = ComplementaryOrientation(use_gravity_ref=False, yz_tilt_deg=tilt)
+    gy = math.radians(amp * math.cos(math.atan2(0.5, 1.0)))
+    gz = math.radians(-amp * math.sin(math.atan2(0.5, 1.0)))
+    o.update(1.0, (0.0, gy, gz), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - amp) < 1e-6
+    assert abs(o.roll_deg) < 1e-6
+
+
+def test_yz_tilt_only_with_default_map():
+    o = ComplementaryOrientation(use_gravity_ref=False, axis_map="swap_yz", yz_tilt_deg=30.0)
+    o.update(1.0, (0.0, 0.0, math.radians(30.0)), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - 30.0) < 1e-6

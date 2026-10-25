@@ -36,18 +36,22 @@ class ComplementaryOrientation:
     AXIS_ROLL = 2
 
     def __init__(self, alpha=0.96, use_gravity_ref=True, axis_map="default",
-                 invert_yaw=False, invert_pitch=False):
+                 invert_yaw=False, invert_pitch=False, yz_tilt_deg=0.0):
         self.alpha = alpha
         self.use_gravity_ref = use_gravity_ref
         self.gain = 1.0
         self.axis_map = axis_map
         self.invert_yaw = invert_yaw
         self.invert_pitch = invert_pitch
+        self.yz_tilt_deg = float(yz_tilt_deg)
         self.yaw_deg = 0.0
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
         self._pitch_acc = 0.0
         self._roll_acc = 0.0
+
+    def set_yz_tilt(self, deg):
+        self.yz_tilt_deg = float(deg)
 
     def set_gain(self, gain):
         self.gain = max(0.1, float(gain))
@@ -81,6 +85,14 @@ class ComplementaryOrientation:
         pitch_rate = math.degrees(raw[p_i]) * self.gain
         yaw_rate = math.degrees(raw[y_i]) * self.gain
         roll_rate = math.degrees(raw[r_i]) * self.gain
+        if self.yz_tilt_deg and self.axis_map == "default":
+            tilt = math.radians(self.yz_tilt_deg)
+            c = math.cos(tilt)
+            s = math.sin(tilt)
+            yaw_rate, roll_rate = (
+                yaw_rate * c - roll_rate * s,
+                yaw_rate * s + roll_rate * c,
+            )
         if self.invert_pitch:
             pitch_rate = -pitch_rate
         if self.invert_yaw:

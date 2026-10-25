@@ -100,6 +100,9 @@ def parse_args(argv=None):
                         "swap_yz: (X,Z,Y) if yaw/roll appear swapped, etc.")
     p.add_argument("--invert-yaw", action="store_true")
     p.add_argument("--invert-pitch", action="store_true")
+    p.add_argument("--yz-tilt", type=float, default=0.0,
+                   help="sensor tilt in the YZ plane, degrees (only with --axis-map default). "
+                        "Set if horizontal head turns produce both yaw and roll. Use t/u in the menu.")
     return p.parse_args(argv)
 
 
@@ -110,6 +113,7 @@ def print_help():
     print("       a = Achsen-Mapping wechseln (wenn links/rechts die Welt kippt) | y = Yaw-Vorzeichen toggeln")
     print("       p = Pitch-Vorzeichen toggeln (jede Änderung recentert automatisch)")
     print("       s = Diagnose: Roh-Gyro-Werte (Grad/s) live anzeigen (zur Achsen-Prüfung)")
+    print("       t/u = YZ-Tilt um +1/-1 Grad (T/U = +5/-5) – nur bei axis_map=default sinnvoll")
 
 
 def load_vrto3d_config(path):
@@ -147,55 +151,31 @@ def poll_keys():
     return keys
 
 
-def main(argv=None):
-    args = parse_args(argv)
-
-    print(f"connecting {args.host}:{args.imu_port} ...")
-    sock = socket.create_connection((args.host, args.imu_port), timeout=5.0)
-    sock.settimeout(10.0)
-    print("connected")
-
-    calib = GyroBias(args.calib_samples)
-    for frame in frame_stream(sock):
-        calib.feed(frame.gyro)
-        if calib.done:
-            break
-    bias = calib.bias
-    print(f"gyro bias (rad/s): {bias[0]:+.5f}, {bias[1]:+.5f}, {bias[2]:+.5f}")
-
-    orientation = ComplementaryOrientation(
+def build_orientation(args):
+    return ComplementaryOrientation(
         use_gravity_ref=not args.no_gravity_ref,
         axis_map=args.axis_map,
         invert_yaw=args.invert_yaw,
         invert_pitch=args.invert_pitch,
+        yz_tilt_deg=args.yz_tilt,
     )
-    if not args.no_auto_recenter:
-        orientation.recenter()
-        print(
-            f"Recenter (geradeaus): Initial ausgerichtet nach Kalibrierung "
-            f"[axis_map={orientation.axis_map} yaw_sign={'I' if orientation.invert_yaw else '+'} "
-            f"pitch_sign={'I' if orientation.invert_pitch else '+'}]"
-        )
+
+
+def calibrate(sock, calib_samples):
+    calib = GyroBias(calib_samples)
+    for frame in frame_stream(sock):
+        calib.feed(frame.gyro)
+        if calib.done:
+            break
+    return calib.bias
+
+
+def run_stream(sock, args, orientation, bias, flags):
+    recenter_flag, axis_flag, yaw_flag, pitch_flag = flags
 
     udp = None
     if not args.dry_run:
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    last = time.monotonic()
-    last_packet = last
-    count = 0
-    t_start = last
-
-    edit_param = None
-    diagnose = False
-    vr_cfg = load_vrto3d_config(args.vrto3d_config)
-    if vr_cfg is None:
-        print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
-
-    recenter_flag = threading.Event()
-    axis_flag = threading.Event()
-    yaw_flag = threading.Event()
-    pitch_flag = threading.Event()
 
     def cycle_axis():
         maps = list(AXIS_MAPS)
@@ -216,6 +196,156 @@ def main(argv=None):
         orientation.set_invert_pitch(not orientation.invert_pitch)
         orientation.recenter()
         print(f">>> Pitch-Vorzeichen = {'invertiert' if orientation.invert_pitch else 'normal'} – recenter")
+
+    def adjust_tilt(delta):
+        if orientation.axis_map != "default":
+            print(">>> Tilt nur bei axis_map=default sinnvoll (erst a drücken)")
+            return
+        orientation.set_yz_tilt(orientation.yz_tilt_deg + delta)
+        print(f">>> YZ-Tilt = {orientation.yz_tilt_deg:+.1f}°")
+
+    edit_param = None
+    diagnose = False
+    vr_cfg = load_vrto3d_config(args.vrto3d_config)
+    if vr_cfg is None:
+        print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
+
+    last = time.monotonic()
+    last_packet = last
+    count = 0
+    t_start = last
+
+    try:
+        for frame in frame_stream(sock):
+            now = time.monotonic()
+            dt = max(1e-4, min(0.05, now - last))
+            last = now
+            orientation.update(dt, frame.gyro, frame.accel, bias)
+            count += 1
+
+            if diagnose and count % 30 == 0:
+                raw = (
+                    frame.gyro[0] - bias[0],
+                    frame.gyro[1] - bias[1],
+                    frame.gyro[2] - bias[2],
+                )
+                print(
+                    f"[diagnose] gyro deg/s  X={math.degrees(raw[0]):+8.2f}  "
+                    f"Y={math.degrees(raw[1]):+8.2f}  Z={math.degrees(raw[2]):+8.2f}",
+                    flush=True,
+                )
+
+            if recenter_flag.is_set():
+                recenter_flag.clear()
+                orientation.recenter()
+                print(">>> Recenter (Hotkey): geradeaus ausgerichtet")
+            if axis_flag.is_set():
+                axis_flag.clear()
+                cycle_axis()
+            if yaw_flag.is_set():
+                yaw_flag.clear()
+                toggle_yaw()
+            if pitch_flag.is_set():
+                pitch_flag.clear()
+                toggle_pitch()
+
+            for ch in poll_keys():
+                if ch == "r":
+                    orientation.recenter()
+                    print(">>> Recenter: geradeaus ausgerichtet")
+                elif ch == "q":
+                    print("Beende auf Wunsch")
+                    return False
+                elif ch == "h":
+                    print_help()
+                elif ch == "s":
+                    diagnose = not diagnose
+                    print(f">>> Diagnose {'an' if diagnose else 'aus'} (zeigt Roh-Gyro in Grad/s)")
+                elif ch == "+" or ch == "=":
+                    if edit_param and vr_cfg is not None:
+                        lo, hi, step = PARAM_RANGES[edit_param]
+                        vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, lo) + step)), 2)
+                        if save_vrto3d_config(args.vrto3d_config, vr_cfg):
+                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
+                        else:
+                            print(">>> Fehler beim Schreiben der VRto3D-Config")
+                    else:
+                        orientation.set_gain(orientation.gain + 0.1)
+                        print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
+                elif ch == "-":
+                    if edit_param and vr_cfg is not None:
+                        lo, hi, step = PARAM_RANGES[edit_param]
+                        vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, hi) - step)), 2)
+                        if save_vrto3d_config(args.vrto3d_config, vr_cfg):
+                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
+                        else:
+                            print(">>> Fehler beim Schreiben der VRto3D-Config")
+                    else:
+                        orientation.set_gain(orientation.gain - 0.1)
+                        print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
+                elif ch in ("1", "2", "3"):
+                    edit_param = ("depth", "convergence", "fov")[int(ch) - 1]
+                    if vr_cfg is not None:
+                        print(f">>> Bild-Param: {edit_param} = {vr_cfg.get(edit_param)}  (+/- ändern, 0 beenden)")
+                    else:
+                        print(f">>> Bild-Param: {edit_param} (Config nicht verfügbar)")
+                elif ch == "0":
+                    edit_param = None
+                    print(">>> Bild-Param-Modus beendet")
+                elif ch == "a":
+                    cycle_axis()
+                elif ch == "y":
+                    toggle_yaw()
+                elif ch == "p":
+                    toggle_pitch()
+                elif ch == "t":
+                    adjust_tilt(1.0)
+                elif ch == "T":
+                    adjust_tilt(5.0)
+                elif ch == "u":
+                    adjust_tilt(-1.0)
+                elif ch == "U":
+                    adjust_tilt(-5.0)
+
+            if args.dry_run:
+                if count == 1 or count % 100 == 0:
+                    print(
+                        f"yaw={orientation.yaw_deg:8.2f} pitch={orientation.pitch_deg:8.2f} "
+                        f"roll={orientation.roll_deg:8.2f} deg gain={orientation.gain:.1f}"
+                    )
+            else:
+                if now - last_packet >= 1.0 / max(1, args.max_rate):
+                    packet = pack_opentrack(
+                        0.0, 0.0, 0.0,
+                        orientation.yaw_deg, orientation.pitch_deg, orientation.roll_deg,
+                    )
+                    udp.sendto(packet, (args.udp_ip, args.udp_port))
+                    last_packet = now
+
+            if args.verbose and count % 1000 == 0:
+                elapsed = now - t_start
+                print(f"frames={count} rate={count / elapsed:.0f} Hz", flush=True)
+
+            if args.duration and now - t_start >= args.duration:
+                break
+
+        return count
+    finally:
+        if udp is not None:
+            udp.close()
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    orientation = build_orientation(args)
+    if not args.no_auto_recenter:
+        orientation.recenter()
+
+    recenter_flag = threading.Event()
+    axis_flag = threading.Event()
+    yaw_flag = threading.Event()
+    pitch_flag = threading.Event()
 
     hotkey_names = [
         args.recenter_hotkey,
@@ -243,118 +373,41 @@ def main(argv=None):
 
     print_help()
 
-    for frame in frame_stream(sock):
-        now = time.monotonic()
-        dt = max(1e-4, min(0.05, now - last))
-        last = now
-        orientation.update(dt, frame.gyro, frame.accel, bias)
-        count += 1
+    flags = (recenter_flag, axis_flag, yaw_flag, pitch_flag)
 
-        if diagnose and count % 30 == 0:
-            raw = (
-                frame.gyro[0] - bias[0],
-                frame.gyro[1] - bias[1],
-                frame.gyro[2] - bias[2],
-            )
-            print(
-                f"[diagnose] gyro deg/s  X={math.degrees(raw[0]):+8.2f}  "
-                f"Y={math.degrees(raw[1]):+8.2f}  Z={math.degrees(raw[2]):+8.2f}",
-                flush=True,
-            )
+    while True:
+        try:
+            print(f"connecting {args.host}:{args.imu_port} ...")
+            sock = socket.create_connection((args.host, args.imu_port), timeout=5.0)
+            sock.settimeout(10.0)
+            print("connected")
 
-        if recenter_flag.is_set():
-            recenter_flag.clear()
-            orientation.recenter()
-            print(">>> Recenter (Hotkey): geradeaus ausgerichtet")
-        if axis_flag.is_set():
-            axis_flag.clear()
-            cycle_axis()
-        if yaw_flag.is_set():
-            yaw_flag.clear()
-            toggle_yaw()
-        if pitch_flag.is_set():
-            pitch_flag.clear()
-            toggle_pitch()
+            bias = calibrate(sock, args.calib_samples)
+            print(f"gyro bias (rad/s): {bias[0]:+.5f}, {bias[1]:+.5f}, {bias[2]:+.5f}")
 
-        for ch in poll_keys():
-            if ch == "r":
+            if not args.no_auto_recenter:
                 orientation.recenter()
-                print(">>> Recenter: geradeaus ausgerichtet")
-            elif ch == "q":
-                print("Beende auf Wunsch")
-                sock.close()
-                if udp is not None:
-                    udp.close()
-                return
-            elif ch == "h":
-                print_help()
-            elif ch == "s":
-                diagnose = not diagnose
-                print(f">>> Diagnose {'an' if diagnose else 'aus'} (zeigt Roh-Gyro in Grad/s)")
-            elif ch == "+" or ch == "=":
-                if edit_param and vr_cfg is not None:
-                    lo, hi, step = PARAM_RANGES[edit_param]
-                    vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, lo) + step)), 2)
-                    if save_vrto3d_config(args.vrto3d_config, vr_cfg):
-                        print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
-                    else:
-                        print(">>> Fehler beim Schreiben der VRto3D-Config")
-                else:
-                    orientation.set_gain(orientation.gain + 0.1)
-                    print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
-            elif ch == "-":
-                if edit_param and vr_cfg is not None:
-                    lo, hi, step = PARAM_RANGES[edit_param]
-                    vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, hi) - step)), 2)
-                    if save_vrto3d_config(args.vrto3d_config, vr_cfg):
-                        print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
-                    else:
-                        print(">>> Fehler beim Schreiben der VRto3D-Config")
-                else:
-                    orientation.set_gain(orientation.gain - 0.1)
-                    print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
-            elif ch in ("1", "2", "3"):
-                edit_param = ("depth", "convergence", "fov")[int(ch) - 1]
-                if vr_cfg is not None:
-                    print(f">>> Bild-Param: {edit_param} = {vr_cfg.get(edit_param)}  (+/- ändern, 0 beenden)")
-                else:
-                    print(f">>> Bild-Param: {edit_param} (Config nicht verfügbar)")
-            elif ch == "0":
-                edit_param = None
-                print(">>> Bild-Param-Modus beendet")
-            elif ch == "a":
-                cycle_axis()
-            elif ch == "y":
-                toggle_yaw()
-            elif ch == "p":
-                toggle_pitch()
-
-        if args.dry_run:
-            if count == 1 or count % 100 == 0:
                 print(
-                    f"yaw={orientation.yaw_deg:8.2f} pitch={orientation.pitch_deg:8.2f} "
-                    f"roll={orientation.roll_deg:8.2f} deg gain={orientation.gain:.1f}"
+                    f"Recenter (geradeaus): Initial ausgerichtet nach Kalibrierung "
+                    f"[axis_map={orientation.axis_map} yaw_sign={'I' if orientation.invert_yaw else '+'} "
+                    f"pitch_sign={'I' if orientation.invert_pitch else '+'} "
+                    f"tilt={orientation.yz_tilt_deg:+.1f}deg]"
                 )
-        else:
-            if now - last_packet >= 1.0 / max(1, args.max_rate):
-                packet = pack_opentrack(
-                    0.0, 0.0, 0.0,
-                    orientation.yaw_deg, orientation.pitch_deg, orientation.roll_deg,
-                )
-                udp.sendto(packet, (args.udp_ip, args.udp_port))
-                last_packet = now
 
-        if args.verbose and count % 1000 == 0:
-            elapsed = now - t_start
-            print(f"frames={count} rate={count / elapsed:.0f} Hz", flush=True)
-
-        if args.duration and now - t_start >= args.duration:
-            break
-
-    if udp is not None:
-        udp.close()
-    sock.close()
-    print(f"done: {count} frames processed")
+            result = run_stream(sock, args, orientation, bias, flags)
+            sock.close()
+            if result is False:
+                return
+            print(f"done: {result} frames processed")
+            return
+        except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
+            print(f"Verbindung verloren ({exc}) – Reconnect in 2 s ...")
+            try:
+                sock.close()
+            except (NameError, OSError):
+                pass
+            time.sleep(2)
+            continue
 
 
 if __name__ == "__main__":
