@@ -60,8 +60,10 @@ def test_quiet_bias_step_updates_after_still_window():
     offset = 0.001  # rad/s, below the quiet threshold
     bias = (0.0, 0.0, 0.0)
     q_state = (0, (0.0, 0.0, 0.0))
-    for _ in range(1000):
-        bias, q_state, updated = quiet_bias_step(bias, (offset, 0.0, 0.0), q_state)
+    for _ in range(10):
+        bias, q_state, updated = quiet_bias_step(
+            bias, (offset, 0.0, 0.0), q_state, samples=10
+        )
     assert updated
     assert abs(bias[0] - offset) < 1e-9
 
@@ -70,10 +72,12 @@ def test_quiet_bias_step_resets_on_motion():
     offset = 0.1
     bias = (0.0, 0.0, 0.0)
     q_state = (0, (0.0, 0.0, 0.0))
-    for _ in range(500):
-        bias, q_state, _ = quiet_bias_step(bias, (offset, 0.0, 0.0), q_state)
+    for _ in range(5):
+        bias, q_state, _ = quiet_bias_step(
+            bias, (offset, 0.0, 0.0), q_state, samples=10
+        )
     bias, q_state, updated = quiet_bias_step(
-        bias, (math.radians(30.0), 0.0, 0.0), q_state
+        bias, (math.radians(30.0), 0.0, 0.0), q_state, samples=10
     )
     assert not updated
     assert q_state[0] == 0
@@ -83,6 +87,8 @@ def test_quiet_bias_step_uses_threshold():
     bias = (0.0, 0.0, 0.0)
     q_state = (0, (0.0, 0.0, 0.0))
     for _ in range(50):
-        bias, q_state, updated = quiet_bias_step(bias, (0.0001, 0.0, 0.0), q_state)
+        bias, q_state, updated = quiet_bias_step(
+            bias, (0.0001, 0.0, 0.0), q_state, samples=100
+        )
     assert not updated
     assert q_state[0] == 50

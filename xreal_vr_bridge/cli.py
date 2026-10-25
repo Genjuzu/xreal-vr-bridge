@@ -26,8 +26,8 @@ PARAM_RANGES = {
     "fov": (40.0, 110.0, 1.0),
 }
 
-QUIET_THRESHOLD_RAD = math.radians(0.5)
-QUIET_SAMPLES = 1000
+QUIET_THRESHOLD_RAD = math.radians(2.0)
+QUIET_SAMPLES = 1200
 
 
 def quiet_bias_step(bias, gyro, q_state, threshold=QUIET_THRESHOLD_RAD, samples=QUIET_SAMPLES):
@@ -423,6 +423,7 @@ def run_stream(sock, args, orientation, bias, flags):
                 print(
                     f"[status] frames={count} rate={count / elapsed:.0f} Hz | "
                     f"map={orientation.axis_map} tilt={orientation.yz_tilt_deg:+.1f}° | "
+                    f"bias=({bias[0]:+.4f},{bias[1]:+.4f},{bias[2]:+.4f}) | "
                     f"yaw={orientation.yaw_deg:7.1f} pitch={orientation.pitch_deg:7.1f} "
                     f"roll={orientation.roll_deg:7.1f}",
                     flush=True,
