@@ -1,6 +1,7 @@
 import argparse
 import ctypes
 import json
+import math
 import os
 import socket
 import tempfile
@@ -108,6 +109,7 @@ def print_help():
     print("       Im Bild-Param-Modus ändern +/- den Wert (schreibt VRto3D-Config); 0 = Modus verlassen")
     print("       a = Achsen-Mapping wechseln (wenn links/rechts die Welt kippt) | y = Yaw-Vorzeichen toggeln")
     print("       p = Pitch-Vorzeichen toggeln (jede Änderung recentert automatisch)")
+    print("       s = Diagnose: Roh-Gyro-Werte (Grad/s) live anzeigen (zur Achsen-Prüfung)")
 
 
 def load_vrto3d_config(path):
@@ -185,6 +187,7 @@ def main(argv=None):
     t_start = last
 
     edit_param = None
+    diagnose = False
     vr_cfg = load_vrto3d_config(args.vrto3d_config)
     if vr_cfg is None:
         print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
@@ -247,6 +250,18 @@ def main(argv=None):
         orientation.update(dt, frame.gyro, frame.accel, bias)
         count += 1
 
+        if diagnose and count % 30 == 0:
+            raw = (
+                frame.gyro[0] - bias[0],
+                frame.gyro[1] - bias[1],
+                frame.gyro[2] - bias[2],
+            )
+            print(
+                f"[diagnose] gyro deg/s  X={math.degrees(raw[0]):+8.2f}  "
+                f"Y={math.degrees(raw[1]):+8.2f}  Z={math.degrees(raw[2]):+8.2f}",
+                flush=True,
+            )
+
         if recenter_flag.is_set():
             recenter_flag.clear()
             orientation.recenter()
@@ -273,6 +288,9 @@ def main(argv=None):
                 return
             elif ch == "h":
                 print_help()
+            elif ch == "s":
+                diagnose = not diagnose
+                print(f">>> Diagnose {'an' if diagnose else 'aus'} (zeigt Roh-Gyro in Grad/s)")
             elif ch == "+" or ch == "=":
                 if edit_param and vr_cfg is not None:
                     lo, hi, step = PARAM_RANGES[edit_param]
