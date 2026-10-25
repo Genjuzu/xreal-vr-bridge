@@ -34,11 +34,30 @@ VK_NAMES = {
 }
 
 _MOD_NOREPEAT = 0x4000
+_MOD_CONTROL = 0x0002
+_MOD_SHIFT = 0x0004
+_MOD_ALT = 0x0001
 _WM_HOTKEY = 0x0312
+
+_MODIFIERS = {
+    "CTRL": _MOD_CONTROL,
+    "SHIFT": _MOD_SHIFT,
+    "ALT": _MOD_ALT,
+}
 
 
 def parse_hotkey(name):
-    return VK_NAMES.get((name or "").upper(), 0)
+    vk, _mod = parse_hotkey_ex(name)
+    return vk
+
+
+def parse_hotkey_ex(name):
+    name = (name or "").upper()
+    mod = 0
+    if "+" in name:
+        prefix, name = name.rsplit("+", 1)
+        mod = _MODIFIERS.get(prefix.strip(), 0)
+    return VK_NAMES.get(name.strip(), 0), mod
 
 
 class HotkeyManager(threading.Thread):
@@ -49,10 +68,10 @@ class HotkeyManager(threading.Thread):
 
     def run(self):
         user32 = ctypes.windll.user32
-        for idx, (vk, _cb) in enumerate(self.bindings, start=1):
+        for idx, (vk, mod, _cb) in enumerate(self.bindings, start=1):
             if not vk:
                 continue
-            if user32.RegisterHotKey(None, idx, _MOD_NOREPEAT, vk):
+            if user32.RegisterHotKey(None, idx, _MOD_NOREPEAT | mod, vk):
                 self.registered += 1
         if not self.registered:
             return
@@ -61,7 +80,7 @@ class HotkeyManager(threading.Thread):
             if msg.message == _WM_HOTKEY:
                 idx = msg.wParam - 1
                 if 0 <= idx < len(self.bindings):
-                    vk, cb = self.bindings[idx]
+                    vk, mod, cb = self.bindings[idx]
                     if vk:
                         cb()
 
@@ -94,6 +113,12 @@ def parse_args(argv=None):
                    help="global hotkey to toggle yaw sign (default F11)")
     p.add_argument("--invert-pitch-hotkey", default="F12",
                    help="global hotkey to toggle pitch sign (default F12)")
+    p.add_argument("--tilt-up-hotkey", default="Ctrl+F11",
+                   help="global hotkey to increase YZ tilt by 1 deg (default Ctrl+F11)")
+    p.add_argument("--tilt-down-hotkey", default="Ctrl+F10",
+                   help="global hotkey to decrease YZ tilt by 1 deg (default Ctrl+F10)")
+    p.add_argument("--tilt-reset-hotkey", default="Ctrl+F12",
+                   help="global hotkey to reset YZ tilt to 0 (default Ctrl+F12)")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -114,6 +139,7 @@ def print_help():
     print("       p = Pitch-Vorzeichen toggeln (jede Änderung recentert automatisch)")
     print("       s = Diagnose: Roh-Gyro-Werte (Grad/s) live anzeigen (zur Achsen-Prüfung)")
     print("       t/u = YZ-Tilt um +1/-1 Grad (T/U = +5/-5) – nur bei axis_map=default sinnvoll")
+    print("       Globale Hotkeys: Ctrl+F10 = Tilt -1, Ctrl+F11 = Tilt +1, Ctrl+F12 = Tilt Reset")
 
 
 def load_vrto3d_config(path):
@@ -124,6 +150,24 @@ def load_vrto3d_config(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+def state_path():
+    return os.path.join(tempfile.gettempdir(), "xreal_bridge_state.json")
+
+
+def save_state(orientation):
+    try:
+        payload = {
+            "axis_map": orientation.axis_map,
+            "invert_yaw": orientation.invert_yaw,
+            "invert_pitch": orientation.invert_pitch,
+            "yz_tilt_deg": orientation.yz_tilt_deg,
+        }
+        with open(state_path(), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except OSError:
+        pass
 
 
 def save_vrto3d_config(path, cfg):
@@ -171,7 +215,8 @@ def calibrate(sock, calib_samples):
 
 
 def run_stream(sock, args, orientation, bias, flags):
-    recenter_flag, axis_flag, yaw_flag, pitch_flag = flags
+    (recenter_flag, axis_flag, yaw_flag, pitch_flag,
+     tilt_up_flag, tilt_down_flag, tilt_reset_flag) = flags
 
     udp = None
     if not args.dry_run:
@@ -182,6 +227,7 @@ def run_stream(sock, args, orientation, bias, flags):
         idx = maps.index(orientation.axis_map)
         orientation.set_axis_map(maps[(idx + 1) % len(maps)])
         orientation.recenter()
+        save_state(orientation)
         print(
             f">>> Achsen-Mapping = {orientation.axis_map} "
             f"(pitch/yaw/roll <- {AXIS_MAPS[orientation.axis_map]}) – recenter"
@@ -190,11 +236,13 @@ def run_stream(sock, args, orientation, bias, flags):
     def toggle_yaw():
         orientation.set_invert_yaw(not orientation.invert_yaw)
         orientation.recenter()
+        save_state(orientation)
         print(f">>> Yaw-Vorzeichen = {'invertiert' if orientation.invert_yaw else 'normal'} – recenter")
 
     def toggle_pitch():
         orientation.set_invert_pitch(not orientation.invert_pitch)
         orientation.recenter()
+        save_state(orientation)
         print(f">>> Pitch-Vorzeichen = {'invertiert' if orientation.invert_pitch else 'normal'} – recenter")
 
     def adjust_tilt(delta):
@@ -202,6 +250,7 @@ def run_stream(sock, args, orientation, bias, flags):
             print(">>> Tilt nur bei axis_map=default sinnvoll (erst a drücken)")
             return
         orientation.set_yz_tilt(orientation.yz_tilt_deg + delta)
+        save_state(orientation)
         print(f">>> YZ-Tilt = {orientation.yz_tilt_deg:+.1f}°")
 
     edit_param = None
@@ -248,6 +297,17 @@ def run_stream(sock, args, orientation, bias, flags):
             if pitch_flag.is_set():
                 pitch_flag.clear()
                 toggle_pitch()
+            if tilt_up_flag.is_set():
+                tilt_up_flag.clear()
+                adjust_tilt(1.0)
+            if tilt_down_flag.is_set():
+                tilt_down_flag.clear()
+                adjust_tilt(-1.0)
+            if tilt_reset_flag.is_set():
+                tilt_reset_flag.clear()
+                orientation.set_yz_tilt(0.0)
+                save_state(orientation)
+                print(">>> YZ-Tilt auf 0 zurückgesetzt")
 
             for ch in poll_keys():
                 if ch == "r":
@@ -322,9 +382,15 @@ def run_stream(sock, args, orientation, bias, flags):
                     udp.sendto(packet, (args.udp_ip, args.udp_port))
                     last_packet = now
 
-            if args.verbose and count % 1000 == 0:
+            if count % 1000 == 0:
                 elapsed = now - t_start
-                print(f"frames={count} rate={count / elapsed:.0f} Hz", flush=True)
+                print(
+                    f"[status] frames={count} rate={count / elapsed:.0f} Hz | "
+                    f"map={orientation.axis_map} tilt={orientation.yz_tilt_deg:+.1f}° | "
+                    f"yaw={orientation.yaw_deg:7.1f} pitch={orientation.pitch_deg:7.1f} "
+                    f"roll={orientation.roll_deg:7.1f}",
+                    flush=True,
+                )
 
             if args.duration and now - t_start >= args.duration:
                 break
@@ -346,18 +412,27 @@ def main(argv=None):
     axis_flag = threading.Event()
     yaw_flag = threading.Event()
     pitch_flag = threading.Event()
+    tilt_up_flag = threading.Event()
+    tilt_down_flag = threading.Event()
+    tilt_reset_flag = threading.Event()
 
     hotkey_names = [
         args.recenter_hotkey,
         args.axis_hotkey,
         args.invert_yaw_hotkey,
         args.invert_pitch_hotkey,
+        args.tilt_up_hotkey,
+        args.tilt_down_hotkey,
+        args.tilt_reset_hotkey,
     ]
     bindings = [
-        (parse_hotkey(hotkey_names[0]), lambda: recenter_flag.set()),
-        (parse_hotkey(hotkey_names[1]), lambda: axis_flag.set()),
-        (parse_hotkey(hotkey_names[2]), lambda: yaw_flag.set()),
-        (parse_hotkey(hotkey_names[3]), lambda: pitch_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[0]), lambda: recenter_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[1]), lambda: axis_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[2]), lambda: yaw_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[3]), lambda: pitch_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[4]), lambda: tilt_up_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[5]), lambda: tilt_down_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[6]), lambda: tilt_reset_flag.set()),
     ]
     hotkey = None
     if os.name == "nt":
@@ -365,7 +440,7 @@ def main(argv=None):
         hotkey.start()
         time.sleep(0.1)
         if hotkey.registered:
-            active = [n for n, (vk, _cb) in zip(hotkey_names, bindings) if vk]
+            active = [n for n, (vk, _mod, _cb) in zip(hotkey_names, bindings) if vk]
             print(f"Globale Hotkeys aktiv: {', '.join(active)}")
         else:
             hotkey = None
@@ -373,7 +448,8 @@ def main(argv=None):
 
     print_help()
 
-    flags = (recenter_flag, axis_flag, yaw_flag, pitch_flag)
+    flags = (recenter_flag, axis_flag, yaw_flag, pitch_flag,
+             tilt_up_flag, tilt_down_flag, tilt_reset_flag)
 
     while True:
         try:
