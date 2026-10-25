@@ -104,7 +104,7 @@ class ComplementaryOrientation:
         if self.invert_yaw:
             yaw_rate = -yaw_rate
         if self.rate_smoothing and self._smooth is None:
-            self._smooth = (pitch_rate, yaw_rate, roll_rate)
+            self._smooth = (0.0, 0.0, 0.0)
         if self.rate_smoothing:
             a = self.rate_smoothing
             sp, sy, sr = self._smooth
