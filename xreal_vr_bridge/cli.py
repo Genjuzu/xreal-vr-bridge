@@ -81,6 +81,12 @@ def parse_args(argv=None):
                    help="path to VRto3D default_config.json (used by image-parameter keys)")
     p.add_argument("--recenter-hotkey", default="F9",
                    help="global hotkey for recenter (default F9; works while game has focus)")
+    p.add_argument("--axis-map", default="default",
+                   choices=["default", "swap_yz", "swap_xy", "rotate"],
+                   help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
+                        "swap_yz: (X,Z,Y) if yaw/roll appear swapped, etc.")
+    p.add_argument("--invert-yaw", action="store_true")
+    p.add_argument("--invert-pitch", action="store_true")
     return p.parse_args(argv)
 
 
@@ -88,6 +94,8 @@ def print_help():
     print("[Menü] r = Recenter (geradeaus) | h = Hilfe | q = Ende")
     print("       +/- = Empfindlichkeit (0.1 Schritte) | 1/2/3 = Bild-Param wählen (Tiefe/Konvergenz/FOV)")
     print("       Im Bild-Param-Modus ändern +/- den Wert (schreibt VRto3D-Config); 0 = Modus verlassen")
+    print("       a = Achsen-Mapping wechseln (wenn links/rechts die Welt kippt) | y = Yaw-Vorzeichen toggeln")
+    print("       p = Pitch-Vorzeichen toggeln (jede Änderung recentert automatisch)")
 
 
 def load_vrto3d_config(path):
@@ -141,10 +149,19 @@ def main(argv=None):
     bias = calib.bias
     print(f"gyro bias (rad/s): {bias[0]:+.5f}, {bias[1]:+.5f}, {bias[2]:+.5f}")
 
-    orientation = ComplementaryOrientation(use_gravity_ref=not args.no_gravity_ref)
+    orientation = ComplementaryOrientation(
+        use_gravity_ref=not args.no_gravity_ref,
+        axis_map=args.axis_map,
+        invert_yaw=args.invert_yaw,
+        invert_pitch=args.invert_pitch,
+    )
     if not args.no_auto_recenter:
         orientation.recenter()
-        print("Recenter (geradeaus): Initial ausgerichtet nach Kalibrierung")
+        print(
+            f"Recenter (geradeaus): Initial ausgerichtet nach Kalibrierung "
+            f"[axis_map={orientation.axis_map} yaw_sign={'I' if orientation.invert_yaw else '+'} "
+            f"pitch_sign={'I' if orientation.invert_pitch else '+'}]"
+        )
 
     udp = None
     if not args.dry_run:
@@ -235,8 +252,22 @@ def main(argv=None):
                 edit_param = None
                 print(">>> Bild-Param-Modus beendet")
             elif ch == "a":
+                maps = list(AXIS_MAPS)
+                idx = maps.index(orientation.axis_map)
+                orientation.set_axis_map(maps[(idx + 1) % len(maps)])
                 orientation.recenter()
-                print(">>> Recenter: geradeaus ausgerichtet")
+                print(
+                    f">>> Achsen-Mapping = {orientation.axis_map} "
+                    f"(pitch/yaw/roll <- {AXIS_MAPS[orientation.axis_map]}) – recenter"
+                )
+            elif ch == "y":
+                orientation.set_invert_yaw(not orientation.invert_yaw)
+                orientation.recenter()
+                print(f">>> Yaw-Vorzeichen = {'invertiert' if orientation.invert_yaw else 'normal'} – recenter")
+            elif ch == "p":
+                orientation.set_invert_pitch(not orientation.invert_pitch)
+                orientation.recenter()
+                print(f">>> Pitch-Vorzeichen = {'invertiert' if orientation.invert_pitch else 'normal'} – recenter")
 
         if args.dry_run:
             if count == 1 or count % 100 == 0:

@@ -1,6 +1,6 @@
 import math
 
-from xreal_vr_bridge.fusion import ComplementaryOrientation, GyroBias
+from xreal_vr_bridge.fusion import AXIS_MAPS, ComplementaryOrientation, GyroBias
 
 
 def test_gyro_bias_mean():
@@ -74,3 +74,45 @@ def test_gain_minimum():
     o = ComplementaryOrientation()
     o.set_gain(0.0)
     assert o.gain == 0.1
+
+
+def test_default_maps_gyro_y_to_yaw():
+    o = ComplementaryOrientation(use_gravity_ref=False)
+    o.update(1.0, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - 30.0) < 1e-6
+    assert abs(o.roll_deg) < 1e-6
+
+
+def test_swap_yz_maps_gyro_z_to_yaw():
+    o = ComplementaryOrientation(use_gravity_ref=False, axis_map="swap_yz")
+    o.update(1.0, (0.0, 0.0, math.radians(30.0)), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - 30.0) < 1e-6
+    assert abs(o.roll_deg) < 1e-6
+    o.update(1.0, (0.0, math.radians(45.0), 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.roll_deg - 45.0) < 1e-6
+    assert abs(o.yaw_deg - 30.0) < 1e-6
+
+
+def test_invert_yaw():
+    o = ComplementaryOrientation(use_gravity_ref=False, invert_yaw=True)
+    o.update(1.0, (0.0, math.radians(30.0), 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg + 30.0) < 1e-6
+
+
+def test_invert_pitch():
+    o = ComplementaryOrientation(use_gravity_ref=False, invert_pitch=True)
+    o.update(1.0, (math.radians(30.0), 0.0, 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.pitch_deg + 30.0) < 1e-6
+
+
+def test_set_axis_map_rejects_unknown():
+    o = ComplementaryOrientation()
+    try:
+        o.set_axis_map("nope")
+        assert False
+    except ValueError:
+        pass
+
+
+def test_axis_maps_cover_all_permutations():
+    assert sorted(AXIS_MAPS.values()) == [(0, 1, 2), (0, 2, 1), (1, 0, 2), (2, 0, 1)]
