@@ -57,7 +57,7 @@ def test_save_load_state_roundtrip():
 
 
 def test_quiet_bias_step_updates_after_still_window():
-    offset = 0.1  # rad/s
+    offset = 0.001  # rad/s, below the quiet threshold
     bias = (0.0, 0.0, 0.0)
     q_state = (0, (0.0, 0.0, 0.0))
     for _ in range(1000):
