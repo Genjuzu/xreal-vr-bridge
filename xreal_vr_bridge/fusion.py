@@ -30,6 +30,33 @@ AXIS_MAPS = {
 }
 
 
+def quat_multiply(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def quat_normalize(q):
+    w, x, y, z = q
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    if norm < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    return (w / norm, x / norm, y / norm, z / norm)
+
+
+def quat_to_euler_degrees(q):
+    w, x, y, z = q
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x)))))
+    yaw = math.degrees(math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+    roll = math.degrees(math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
+    return yaw, pitch, roll
+
+
 class ComplementaryOrientation:
     AXIS_PITCH = 0
     AXIS_YAW = 1
@@ -47,6 +74,7 @@ class ComplementaryOrientation:
         self.yz_tilt_deg = float(yz_tilt_deg)
         self.rate_smoothing = max(0.0, min(1.0, float(rate_smoothing)))
         self._smooth = None
+        self._q = (1.0, 0.0, 0.0, 0.0)
         self.yaw_deg = 0.0
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
@@ -74,6 +102,7 @@ class ComplementaryOrientation:
         self.invert_pitch = bool(invert)
 
     def recenter(self):
+        self._q = (1.0, 0.0, 0.0, 0.0)
         self.yaw_deg = 0.0
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
@@ -116,10 +145,35 @@ class ComplementaryOrientation:
             pitch_rate, yaw_rate, roll_rate = self._smooth
         return pitch_rate, yaw_rate, roll_rate
 
+    def _quat_integrate(self, dt, rates_deg):
+        pitch_rate, yaw_rate, roll_rate = rates_deg
+        if dt <= 0.0:
+            return
+        roll = math.radians(roll_rate) * dt
+        pitch = math.radians(pitch_rate) * dt
+        yaw = math.radians(yaw_rate) * dt
+        if abs(roll) < 1e-12 and abs(pitch) < 1e-12 and abs(yaw) < 1e-12:
+            return
+        cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+        cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+        cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+        dq = (
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        )
+        self._q = quat_normalize(quat_multiply(self._q, dq))
+        self.yaw_deg, self.pitch_deg, self.roll_deg = quat_to_euler_degrees(self._q)
+
     def update(self, dt, gyro, accel, bias=None):
         ax, ay, az = accel
 
         pitch_rate, yaw_rate, roll_rate = self._decompose(gyro, bias)
+
+        if not self.use_gravity_ref:
+            self._quat_integrate(dt, (pitch_rate, yaw_rate, roll_rate))
+            return
 
         a = self.alpha
         if self.use_gravity_ref:

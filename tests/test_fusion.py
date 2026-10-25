@@ -1,6 +1,13 @@
 import math
 
-from xreal_vr_bridge.fusion import AXIS_MAPS, ComplementaryOrientation, GyroBias
+from xreal_vr_bridge.fusion import (
+    AXIS_MAPS,
+    ComplementaryOrientation,
+    GyroBias,
+    quat_multiply,
+    quat_normalize,
+    quat_to_euler_degrees,
+)
 
 
 def test_gyro_bias_mean():
@@ -129,10 +136,58 @@ def test_yz_tilt_decouples_yaw_from_roll():
     assert abs(o.roll_deg) < 1e-6
 
 
+def _from_euler_angles_deg(roll, pitch, yaw):
+    import math as _m
+
+    cr, sr = _m.cos(_m.radians(roll) * 0.5), _m.sin(_m.radians(roll) * 0.5)
+    cp, sp = _m.cos(_m.radians(pitch) * 0.5), _m.sin(_m.radians(pitch) * 0.5)
+    cy, sy = _m.cos(_m.radians(yaw) * 0.5), _m.sin(_m.radians(yaw) * 0.5)
+    return quat_normalize((
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ))
+
+
+def test_quaternion_helpers_roundtrip():
+    roll, pitch, yaw = 10.0, 20.0, 30.0
+    q = _from_euler_angles_deg(roll, pitch, yaw)
+    y, p, r = quat_to_euler_degrees(q)
+    assert abs(y - yaw) < 1e-6
+    assert abs(p - pitch) < 1e-6
+    assert abs(r - roll) < 1e-6
+
+
 def test_yz_tilt_only_with_default_map():
     o = ComplementaryOrientation(use_gravity_ref=False, axis_map="swap_yz", yz_tilt_deg=30.0)
     o.update(1.0, (0.0, 0.0, math.radians(30.0)), (0.0, 0.0, 9.81))
     assert abs(o.yaw_deg - 30.0) < 1e-6
+
+
+def test_quaternion_mode_no_roll_drift_on_return_to_center():
+    o = ComplementaryOrientation(use_gravity_ref=False)
+    for _ in range(90):
+        o.update(0.01, (0.0, math.radians(100.0), 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg - 90.0) < 0.5
+    for _ in range(90):
+        o.update(0.01, (0.0, math.radians(-100.0), 0.0), (0.0, 0.0, 9.81))
+    for _ in range(90):
+        o.update(0.01, (math.radians(100.0), 0.0, 0.0), (0.0, 0.0, 9.81))
+    for _ in range(90):
+        o.update(0.01, (math.radians(-100.0), 0.0, 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.yaw_deg) < 0.5
+    assert abs(o.pitch_deg) < 0.5
+    assert abs(o.roll_deg) < 0.5
+
+
+def test_quaternion_mode_pure_pitch_creates_no_roll():
+    o = ComplementaryOrientation(use_gravity_ref=False)
+    for _ in range(70):
+        o.update(0.01, (math.radians(100.0), 0.0, 0.0), (0.0, 0.0, 9.81))
+    assert abs(o.pitch_deg - 70.0) < 0.5
+    assert abs(o.roll_deg) < 0.5
+    assert abs(o.yaw_deg) < 0.5
 
 
 def test_rate_smoothing_limits_initial_jump():
