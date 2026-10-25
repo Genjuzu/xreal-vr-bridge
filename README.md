@@ -49,6 +49,53 @@ Standard 120), `--duration` (nach N Sekunden beenden), `--verbose`.
 - Bridge-Lauf: Bias-Kalibrierung liefert endliche Werte; statische Pitch-/Roll-Werte
   konvergieren stabil (Testgerät lag geneigt, pitch ≈ −68°, yaw ≈ 0°).
 
+## SteamVR / VRto3D-Integration (Windows)
+
+Voraussetzungen: SteamVR installiert, XREAL One Pro per USB-C angeschlossen
+(Display + Ethernet), Brille im **Follow Mode (0DoF)**, **Stabilizer OFF** und
+**3D Mode Full SBS** (OSD: Doppelklick auf „X“).
+
+Installation des Treibers (einmalig):
+
+```powershell
+$zip = (Invoke-WebRequest -Uri "https://github.com/oneup03/VRto3D/releases/download/V5.0.0/VRto3D.zip").Content
+Expand-Archive -Path $zip -DestinationPath "$env:TEMP\vrto3d" -Force
+Copy-Item -Recurse "$env:TEMP\vrto3d\vrto3d" `
+  "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\vrto3d"
+```
+
+Danach in `Steam\config\steamvr.vrsettings` unter `steamvr` setzen:
+`"forcedDriver": "vrto3d"` (Backup vorher anlegen). Die Datei
+`Steam\config\vrto3d\default_config.json` wird beim ersten Start von VRto3D
+angelegt; für die XREAL One Pro relevant:
+
+```json
+{
+  "output_mode": "SbS",
+  "render_width": 1920,
+  "render_height": 1080,
+  "aspect_ratio": 1.77778,
+  "fov": 57.0,
+  "use_open_track": true,
+  "open_track_port": 4242
+}
+```
+
+Betrieb:
+
+```powershell
+# Bridge (IMU -> OpenTrack UDP auf 127.0.0.1:4242)
+Start-Process -FilePath "C:\...\xreal-vr-bridge\.venv\Scripts\python.exe" `
+  -ArgumentList "-m","xreal_vr_bridge.cli" -WindowStyle Hidden
+# SteamVR starten (HMD erscheint als "Stereo3D-1234" / VRto3D)
+Start-Process "steam://run/250820"
+```
+
+Falls das VR-Fenster auf dem falschen Monitor erscheint: `display_index` in
+`default_config.json` anpassen (1 = erster Monitor, 2 = zweiter usw.) und
+SteamVR neu starten. `Ctrl + Home` öffnet das VRto3D-OSD (Tracking-Tab →
+OpenTrack).
+
 ## Architektur
 
 ```
