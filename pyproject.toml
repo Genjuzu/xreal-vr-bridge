@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xreal-vr-bridge"
+version = "0.1.0"
+description = "XREAL One/Pro (X1 chip) IMU -> OpenTrack UDP bridge for SteamVR / VRto3D / simulators"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+xreal-bridge = "xreal_vr_bridge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["xreal_vr_bridge*"]
