@@ -593,22 +593,27 @@ def run_stream(frames, args, orientation, bias, flags):
                     diagnose = not diagnose
                     print(f">>> Diagnose {'an' if diagnose else 'aus'} (zeigt Roh-Gyro in Grad/s)")
                 elif ch == "+" or ch == "=":
+                    if edit_param:
+                        # re-read: VRto3D OSD / other tools may have changed the file
+                        vr_cfg = load_vrto3d_config(args.vrto3d_config) or vr_cfg
                     if edit_param and vr_cfg is not None:
                         lo, hi, step = PARAM_RANGES[edit_param]
                         vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, lo) + step)), 2)
                         if save_vrto3d_config(args.vrto3d_config, vr_cfg):
-                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
+                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; jetzt im Spiel/VR-Fenster Ctrl+Shift+F10 drücken = Neuladen, Piepton)")
                         else:
                             print(">>> Fehler beim Schreiben der VRto3D-Config")
                     else:
                         orientation.set_gain(orientation.gain + 0.1)
                         print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
                 elif ch == "-":
+                    if edit_param:
+                        vr_cfg = load_vrto3d_config(args.vrto3d_config) or vr_cfg
                     if edit_param and vr_cfg is not None:
                         lo, hi, step = PARAM_RANGES[edit_param]
                         vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, hi) - step)), 2)
                         if save_vrto3d_config(args.vrto3d_config, vr_cfg):
-                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; im Spiel Ctrl+Shift+F10 zum Neuladen)")
+                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; jetzt im Spiel/VR-Fenster Ctrl+Shift+F10 drücken = Neuladen, Piepton)")
                         else:
                             print(">>> Fehler beim Schreiben der VRto3D-Config")
                     else:
@@ -616,8 +621,10 @@ def run_stream(frames, args, orientation, bias, flags):
                         print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
                 elif ch in ("1", "2", "3"):
                     edit_param = ("depth", "convergence", "fov")[int(ch) - 1]
+                    vr_cfg = load_vrto3d_config(args.vrto3d_config) or vr_cfg
                     if vr_cfg is not None:
-                        print(f">>> Bild-Param: {edit_param} = {vr_cfg.get(edit_param)}  (+/- ändern, 0 beenden)")
+                        hint = " (+ = rauszoomen, - = reinzoomen)" if edit_param == "fov" else ""
+                        print(f">>> Bild-Param: {edit_param} = {vr_cfg.get(edit_param)}  (+/- ändern, 0 beenden){hint}")
                     else:
                         print(f">>> Bild-Param: {edit_param} (Config nicht verfügbar)")
                 elif ch == "0":
