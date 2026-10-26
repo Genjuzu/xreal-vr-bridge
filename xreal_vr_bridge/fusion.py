@@ -1,6 +1,6 @@
 import math
 
-from .ahrs import QuatAHRS, q_pow, q_to_opentrack
+from .ahrs import QuatAHRS, opentrack_to_q, q_axis_angle, q_mul, q_pow, q_to_opentrack
 
 
 class GyroBias:
@@ -88,6 +88,7 @@ class ComplementaryOrientation:
         self._ahrs = QuatAHRS(use_gravity=use_gravity_ref)
         self._ahrs_bias_seeded = False
         self.yaw_offset_deg = 0.0
+        self.pitch_offset_deg = 0.0
 
     def set_yaw_offset(self, deg):
         """Extra heading added to every output (and therefore after every
@@ -95,12 +96,25 @@ class ComplementaryOrientation:
         SteamVR dashboard).  Normalised to [-180, 180)."""
         self.yaw_offset_deg = (float(deg) + 180.0) % 360.0 - 180.0
 
+    def set_pitch_offset(self, deg):
+        """Extra pitch about the head's local right axis (+ = view up)."""
+        self.pitch_offset_deg = max(-89.0, min(89.0, float(deg)))
+
     def output_euler(self):
-        """(yaw, pitch, roll) in OpenTrack degrees incl. yaw offset.  Because
-        VRto3D applies yaw first (Ry(-yaw) * Rx(pitch) * Rz(roll)), adding to
-        yaw is exactly a world-heading rotation; pitch/roll are untouched."""
-        yaw = (self.yaw_deg + self.yaw_offset_deg + 180.0) % 360.0 - 180.0
-        return yaw, self.pitch_deg, self.roll_deg
+        """(yaw, pitch, roll) in OpenTrack degrees incl. manual alignment.
+
+        out = Ry_world(yaw offset) * head * Rx_local(pitch offset), built in
+        VRto3D's convention (it rebuilds Ry(-yaw) * Rx(pitch) * Rz(roll)), so
+        +yaw offset = view turned right, +pitch offset = view up.  Without a
+        pitch offset this is exactly yaw + offset (VRto3D applies yaw first).
+        """
+        if not self.pitch_offset_deg:
+            yaw = (self.yaw_deg + self.yaw_offset_deg + 180.0) % 360.0 - 180.0
+            return yaw, self.pitch_deg, self.roll_deg
+        q = opentrack_to_q(self.yaw_deg, self.pitch_deg, self.roll_deg)
+        qy = q_axis_angle((0.0, 1.0, 0.0), -math.radians(self.yaw_offset_deg))
+        qp = q_axis_angle((1.0, 0.0, 0.0), math.radians(self.pitch_offset_deg))
+        return q_to_opentrack(q_mul(q_mul(qy, q), qp))
 
     def set_fusion_mode(self, mode):
         if mode in self.FUSION_MODES:

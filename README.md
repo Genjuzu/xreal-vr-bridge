@@ -109,15 +109,24 @@ OpenTrack).
 | `0` | Bild-Param-Modus verlassen |
 | `h` | Hilfe anzeigen |
 | `q` | Bridge beenden |
+| `←` / `→` | **Ausrichten**: Blickrichtung −5° / +5° (mit `Shift` 1°) |
+| `↑` / `↓` | **Ausrichten**: Neigung +5° / −5° (Blick höher/tiefer; mit `Shift` 1°) |
+| `Enter` | Ausrichtung **speichern** = neue kalibrierte Position (bleibt bei F9 und Neustart) |
+| `Backspace` | Ausrichtung auf Standard zurück (`--recenter-yaw-offset`, z.B. 180°, Neigung 0) und gespeicherte Position löschen |
+| `Ctrl+Alt+` Pfeile / `Enter` / `Backspace` | dasselbe **global** (während das Spiel den Fokus hat; `Ctrl+Alt+Shift+Pfeil` = 1°) |
 | `b` / `F8` | Ansicht um **180° drehen** (z.B. SteamVR-Menü liegt hinter dir → nach vorne holen). `F8` ist global |
-| `[` / `]` | Blickrichtungs-Offset −15° / +15° |
+| `[` / `]` | Blickrichtung −15° / +15° |
 | `R` | nur Blickrichtung (Yaw) zurücksetzen, Neigung bleibt |
 | `s` | Diagnose (Roh-Gyro, Beschleunigung, Ausgabe) |
 
-Der Blickrichtungs-Offset (`--recenter-yaw-offset GRAD`, z.B. `180`) wird nach
-jedem Recenter (F9) auf die Ausgabe-Yaw addiert, bleibt also bei jedem F9
-erhalten, und wird in `%TEMP%\xreal_bridge_state.json` gespeichert (ein
-expliziter Wert auf der Kommandozeile hat Vorrang).
+Ausrichtung = Drehung um die senkrechte Welt-Achse (Yaw) und danach um die
+eigene Querachse (Neigung), als Quaternion auf die Ausgabe gerechnet. Sie wird
+nach jedem Recenter (F9) angewendet. Änderungen mit Pfeilen/`b`/`[`/`]` sind
+vorläufig, bis `Enter` sie in `%TEMP%\xreal_bridge_state.json` speichert; eine
+gespeicherte Ausrichtung hat beim Start Vorrang vor `--recenter-yaw-offset` /
+`--recenter-pitch-offset` (die sind der Standard für `Backspace`). Globale
+Tasten-Präfix ändern: `--align-modifier "Ctrl+Shift"` (leer = aus). Hinweis:
+Manche Intel-Grafiktreiber belegen `Ctrl+Alt+Pfeil` für Bildschirmdrehung.
 
 ### Ruckeln / Bildruhe
 
@@ -131,8 +140,11 @@ expliziter Wert auf der Kommandozeile hat Vorrang).
   – fast keine Verzögerung bei schnellen Drehungen. Standard: aus.
 - Zusätzlich hat VRto3D einen eigenen Filter (`use_track_filter`, im OSD
   `Ctrl+Home` → Tracking).
-- `fov` in der VRto3D-Config: größer = mehr sichtbar, aber alles wirkt kleiner
-  (und Ränder werden mehr verzerrt/unschärfer); live mit `3` und `+`/`-`.
+- `fov` in der VRto3D-Config (horizontal) sollte zum echten Sichtfeld der
+  Brille passen (One Pro: 57° diagonal ≈ 51° horizontal). Ein deutlich
+  größerer Wert (z.B. 70) lässt die Welt bei Kopfdrehungen „mitschwimmen“
+  (Übelkeit), weil sich das Bild schneller/langsamer als der Kopf bewegt.
+  Live mit `3` und `+`/`-`.
 
 Tipp: Sind die Bilder leicht verschwommen oder zu „nah/fern“, mit `1`/`2`/`3`
 die Werte in kleinen Schritten anpassen und mit `Ctrl+Shift+F10` im Spiel neu

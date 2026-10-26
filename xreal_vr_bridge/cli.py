@@ -3,6 +3,7 @@ import ctypes
 import json
 import math
 import os
+import queue
 import socket
 import tempfile
 import threading
@@ -61,6 +62,12 @@ def frame_dt(prev_ts_ns, ts_ns, host_dt):
 
 
 VK_NAMES = {
+    "LEFT": 0x25,
+    "UP": 0x26,
+    "RIGHT": 0x27,
+    "DOWN": 0x28,
+    "ENTER": 0x0D,
+    "BACKSPACE": 0x08,
     "F8": 0x77,
     "F9": 0x78,
     "F10": 0x79,
@@ -87,11 +94,16 @@ def parse_hotkey(name):
 
 
 def parse_hotkey_ex(name):
+    """'F9', 'Ctrl+F11', 'Ctrl+Alt+Shift+Left' -> (vk, modifier bits)."""
     name = (name or "").upper()
     mod = 0
     if "+" in name:
-        prefix, name = name.rsplit("+", 1)
-        mod = _MODIFIERS.get(prefix.strip(), 0)
+        *prefixes, name = name.split("+")
+        for prefix in prefixes:
+            bit = _MODIFIERS.get(prefix.strip(), 0)
+            if not bit:
+                return 0, 0
+            mod |= bit
     return VK_NAMES.get(name.strip(), 0), mod
 
 
@@ -151,7 +163,13 @@ def parse_args(argv=None):
                    help="path to VRto3D default_config.json (used by image-parameter keys)")
     p.add_argument("--recenter-yaw-offset", type=float, default=None, metavar="DEG",
                    help="heading added after every recenter (180 = face what is behind you, "
-                        "e.g. the SteamVR dashboard). Explicit value wins over the state file")
+                        "e.g. the SteamVR dashboard). Default for Backspace; a position saved "
+                        "with Enter wins")
+    p.add_argument("--recenter-pitch-offset", type=float, default=0.0, metavar="DEG",
+                   help="pitch added after every recenter (+ = view up); default for Backspace")
+    p.add_argument("--align-modifier", default="Ctrl+Alt",
+                   help="modifier for the global alignment hotkeys (arrows/Enter/Backspace); "
+                        "'' disables them")
     p.add_argument("--flip-hotkey", default="F8",
                    help="global hotkey: toggle extra 180 deg view flip (default F8)")
     p.add_argument("--recenter-hotkey", default="F9",
@@ -202,8 +220,10 @@ def print_help():
     print("       Im ref-Modus: r/F9 = geradeaus UND waagerecht schauen, dann drücken")
     print("       (lernt dabei die ~30° Einbauneigung des IMU)")
     print("       Globale Hotkeys: Ctrl+F10 = Tilt -1, Ctrl+F11 = Tilt +1, Ctrl+F12 = Tilt Reset")
-    print("       b / F8 = Ansicht um 180° drehen (z.B. SteamVR-Menü nach vorne) | [ / ] = Blickrichtung -15/+15°")
-    print("       (Offset bleibt bei jedem F9-Recenter erhalten und wird gespeichert)")
+    print("       Ausrichten: Pfeil links/rechts = Blickrichtung ±5° (Shift = 1°), Pfeil hoch/runter = Neigung")
+    print("       Enter = Ausrichtung speichern (bleibt bei F9 und Neustart) | Backspace = Standard")
+    print("       Im Spiel: Ctrl+Alt+Pfeile / Ctrl+Alt+Enter / Ctrl+Alt+Backspace")
+    print("       b / F8 = Ansicht um 180° drehen | [ / ] = Blickrichtung -15/+15°")
 
 
 def load_vrto3d_config(path):
@@ -236,8 +256,11 @@ def save_state(orientation):
             "invert_pitch": orientation.invert_pitch,
             "yz_tilt_deg": orientation.yz_tilt_deg,
             "fusion_mode": orientation.fusion_mode,
-            "yaw_offset_deg": orientation.yaw_offset_deg,
         }
+        aligned = getattr(orientation, "aligned_offsets", None)
+        if aligned is not None:
+            payload["aligned_yaw_offset_deg"] = aligned[0]
+            payload["aligned_pitch_offset_deg"] = aligned[1]
         with open(state_path(), "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
     except OSError:
@@ -259,6 +282,37 @@ def save_vrto3d_config(path, cfg):
         return False
 
 
+_CONSOLE_ARROWS = {"K": "LEFT", "M": "RIGHT", "H": "UP", "P": "DOWN"}
+
+
+def _shift_down():
+    try:
+        return bool(ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
+    except (AttributeError, OSError):
+        return False
+
+
+def translate_keys(raw, shift=False):
+    """Console chars -> tokens: arrows become 'LEFT'/'S-LEFT' (Shift),
+    Enter 'ENTER', Backspace 'BACKSPACE'; everything else unchanged."""
+    out = []
+    it = iter(raw)
+    for ch in it:
+        if ch in ("\x00", "\xe0"):
+            code = next(it, "")
+            name = _CONSOLE_ARROWS.get(code)
+            if name:
+                out.append(("S-" if shift else "") + name)
+            continue
+        if ch == "\r":
+            out.append("ENTER")
+        elif ch == "\x08":
+            out.append("BACKSPACE")
+        else:
+            out.append(ch)
+    return out
+
+
 def poll_keys():
     if msvcrt is None:
         return []
@@ -266,7 +320,47 @@ def poll_keys():
     while msvcrt.kbhit():
         ch = msvcrt.getwch()
         keys.append(ch)
-    return keys
+        if ch in ("\x00", "\xe0") and msvcrt.kbhit():
+            keys.append(msvcrt.getwch())
+    return translate_keys(keys, _shift_down()) if keys else []
+
+
+ALIGN_STEP = 5.0
+ALIGN_FINE_STEP = 1.0
+ALIGN_KEYS = {
+    "LEFT": ("yaw", -ALIGN_STEP), "RIGHT": ("yaw", ALIGN_STEP),
+    "UP": ("pitch", ALIGN_STEP), "DOWN": ("pitch", -ALIGN_STEP),
+    "S-LEFT": ("yaw", -ALIGN_FINE_STEP), "S-RIGHT": ("yaw", ALIGN_FINE_STEP),
+    "S-UP": ("pitch", ALIGN_FINE_STEP), "S-DOWN": ("pitch", -ALIGN_FINE_STEP),
+    "ENTER": ("save", 0.0), "BACKSPACE": ("reset", 0.0),
+    "b": ("yaw", 180.0), "[": ("yaw", -15.0), "]": ("yaw", 15.0),
+}
+
+
+def apply_align_action(orientation, action, value, defaults):
+    """Manual alignment.  Live changes are temporary until 'save' (Enter),
+    which stores them as the calibrated position (state file; survives F9 and
+    restarts).  'reset' (Backspace) returns to the start defaults
+    (--recenter-yaw-offset / --recenter-pitch-offset) and forgets the saved
+    position.  Returns a short German status line."""
+    if action == "yaw":
+        orientation.set_yaw_offset(orientation.yaw_offset_deg + value)
+    elif action == "pitch":
+        orientation.set_pitch_offset(orientation.pitch_offset_deg + value)
+    elif action == "save":
+        orientation.aligned_offsets = (orientation.yaw_offset_deg, orientation.pitch_offset_deg)
+        save_state(orientation)
+        return (f">>> Ausrichtung gespeichert: Yaw {orientation.yaw_offset_deg:+.0f}°, "
+                f"Pitch {orientation.pitch_offset_deg:+.0f}°")
+    elif action == "reset":
+        orientation.set_yaw_offset(defaults[0])
+        orientation.set_pitch_offset(defaults[1])
+        orientation.aligned_offsets = None
+        save_state(orientation)
+        return (f">>> Ausrichtung zurückgesetzt: Yaw {orientation.yaw_offset_deg:+.0f}°, "
+                f"Pitch {orientation.pitch_offset_deg:+.0f}°")
+    return (f">>> Ausrichtung: Yaw {orientation.yaw_offset_deg:+.0f}°, "
+            f"Pitch {orientation.pitch_offset_deg:+.0f}° (Enter = speichern)")
 
 
 def build_orientation(args):
@@ -346,11 +440,13 @@ def run_stream(frames, args, orientation, bias, flags):
     (recenter_flag, axis_flag, yaw_flag, pitch_flag,
      tilt_up_flag, tilt_down_flag, tilt_reset_flag, *rest) = flags
     flip_flag = rest[0] if rest else threading.Event()
+    align_queue = rest[1] if len(rest) > 1 else queue.SimpleQueue()
+    align_defaults = rest[2] if len(rest) > 2 else (orientation.yaw_offset_deg,
+                                                    orientation.pitch_offset_deg)
 
-    def nudge_yaw_offset(delta):
-        orientation.set_yaw_offset(orientation.yaw_offset_deg + delta)
-        save_state(orientation)
-        print(f">>> Blickrichtungs-Offset = {orientation.yaw_offset_deg:+.0f}°")
+    def align(token):
+        action, value = ALIGN_KEYS[token]
+        print(apply_align_action(orientation, action, value, align_defaults))
 
     udp = None
     sender = None
@@ -469,7 +565,12 @@ def run_stream(frames, args, orientation, bias, flags):
                 adjust_tilt(-1.0)
             if flip_flag.is_set():
                 flip_flag.clear()
-                nudge_yaw_offset(180.0)
+                align("b")
+            while True:
+                try:
+                    align(align_queue.get_nowait())
+                except queue.Empty:
+                    break
             if tilt_reset_flag.is_set():
                 tilt_reset_flag.clear()
                 orientation.set_yz_tilt(0.0)
@@ -538,12 +639,8 @@ def run_stream(frames, args, orientation, bias, flags):
                     adjust_tilt(-5.0)
                 elif ch == "f":
                     cycle_fusion_mode()
-                elif ch == "b":
-                    nudge_yaw_offset(180.0)
-                elif ch == "[":
-                    nudge_yaw_offset(-15.0)
-                elif ch == "]":
-                    nudge_yaw_offset(15.0)
+                elif ch in ALIGN_KEYS:
+                    align(ch)
 
             if args.dry_run:
                 if count == 1 or count % 100 == 0:
@@ -590,6 +687,7 @@ def main(argv=None):
         args.yz_tilt = float(saved["yz_tilt_deg"])
     if args.recenter_yaw_offset is None:
         args.recenter_yaw_offset = float((saved or {}).get("yaw_offset_deg", 0.0))
+    align_defaults = (args.recenter_yaw_offset, args.recenter_pitch_offset)
     if args.fusion_mode is None:
         args.fusion_mode = "ref"
         if saved is not None and saved.get("fusion_mode") in ComplementaryOrientation.FUSION_MODES:
@@ -608,9 +706,16 @@ def main(argv=None):
 
     orientation = build_orientation(args)
     orientation.set_yaw_offset(args.recenter_yaw_offset)
-    if orientation.yaw_offset_deg:
-        print(f"Blickrichtungs-Offset nach Recenter: {orientation.yaw_offset_deg:+.0f}° "
-              f"(F8/b = 180° drehen, [ / ] = ±15°)")
+    orientation.set_pitch_offset(args.recenter_pitch_offset)
+    orientation.aligned_offsets = None
+    if saved and "aligned_yaw_offset_deg" in saved:
+        orientation.aligned_offsets = (float(saved["aligned_yaw_offset_deg"]),
+                                       float(saved.get("aligned_pitch_offset_deg", 0.0)))
+        orientation.set_yaw_offset(orientation.aligned_offsets[0])
+        orientation.set_pitch_offset(orientation.aligned_offsets[1])
+        print("Gespeicherte Ausrichtung geladen (Backspace = zurück auf Standard)")
+    print(f"Ausrichtung: Yaw {orientation.yaw_offset_deg:+.0f}°, Pitch {orientation.pitch_offset_deg:+.0f}° "
+          f"| Pfeile = ausrichten, Enter = speichern, F8/b = 180°")
     if not args.no_auto_recenter:
         orientation.recenter("auto")
 
@@ -622,6 +727,7 @@ def main(argv=None):
     tilt_down_flag = threading.Event()
     tilt_reset_flag = threading.Event()
     flip_flag = threading.Event()
+    align_queue = queue.SimpleQueue()
 
     hotkey_names = [
         args.recenter_hotkey,
@@ -643,6 +749,14 @@ def main(argv=None):
         (*parse_hotkey_ex(hotkey_names[6]), lambda: tilt_reset_flag.set()),
         (*parse_hotkey_ex(hotkey_names[7]), lambda: flip_flag.set()),
     ]
+    if args.align_modifier:
+        for key in ("LEFT", "RIGHT", "UP", "DOWN", "ENTER", "BACKSPACE"):
+            for shift in ((False, True) if key in _CONSOLE_ARROWS.values() else (False,)):
+                hk = args.align_modifier + ("+Shift" if shift else "") + "+" + key
+                token = ("S-" if shift else "") + key
+                hotkey_names.append(hk)
+                bindings.append((*parse_hotkey_ex(hk),
+                                 lambda t=token: align_queue.put(t)))
     hotkey = None
     if os.name == "nt":
         hotkey = HotkeyManager(bindings)
@@ -658,7 +772,8 @@ def main(argv=None):
     print_help()
 
     flags = (recenter_flag, axis_flag, yaw_flag, pitch_flag,
-             tilt_up_flag, tilt_down_flag, tilt_reset_flag, flip_flag)
+             tilt_up_flag, tilt_down_flag, tilt_reset_flag, flip_flag, align_queue,
+             align_defaults)
 
     while True:
         try:
