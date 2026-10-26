@@ -32,19 +32,31 @@ def active_displays():
             mon_id = ""
             if user32.EnumDisplayDevicesW(dd.DeviceName, 0, ctypes.byref(mon), 0):
                 mon_id = mon.DeviceID
-            out.append((dd.DeviceName, mon_id))
+            out.append((dd.DeviceName, mon_id, bool(dd.StateFlags & 4)))
         i += 1
     return out
 
 
+def vrto3d_order(displays):
+    """VRto3D (platform::EnumerateMonitors) swaps the PRIMARY monitor to
+    position 1; display_index counts in that order.  Without the swap the
+    XREAL got index 1 = laptop panel when the laptop is primary."""
+    out = list(displays)
+    for i, d in enumerate(out):
+        if d[2] and i != 0:
+            out[0], out[i] = out[i], out[0]
+            break
+    return out
+
+
 def main():
-    displays = active_displays()
+    displays = vrto3d_order(active_displays())
     if not displays:
         print("keine aktiven Displays gefunden")
         return 1
-    for idx, (name, devid) in enumerate(displays, start=1):
-        print(f"order {idx}: {name} | {devid}")
-    xreal = [idx for idx, (name, devid) in enumerate(displays, start=1)
+    for idx, (name, devid, primary) in enumerate(displays, start=1):
+        print(f"order {idx}: {name} | {devid}{' [primary]' if primary else ''}")
+    xreal = [idx for idx, (name, devid, _p) in enumerate(displays, start=1)
              if "MRG4100" in devid]
     if not xreal:
         print("XREAL-Display (MRG4100) nicht gefunden – nichts geändert")
