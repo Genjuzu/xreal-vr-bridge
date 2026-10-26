@@ -202,11 +202,11 @@ def test_quat_old_gyro_y_maps_to_yaw_field():
 def test_ref_mode_stable_without_motion():
     o = ComplementaryOrientation(use_gravity_ref=False, fusion_mode="ref")
     for _ in range(300):
-        o.update(0.01, (0.0, 0.0, 0.0), (0.0, 0.0, 9.81))
+        o.update(0.01, (0.0, 0.0, 0.0), (0.0, -9.81, 0.0))
     assert all(math.isfinite(v) for v in (o.yaw_deg, o.pitch_deg, o.roll_deg))
     first = (o.yaw_deg, o.pitch_deg, o.roll_deg)
     for _ in range(100):
-        o.update(0.01, (0.0, 0.0, 0.0), (0.0, 0.0, 9.81))
+        o.update(0.01, (0.0, 0.0, 0.0), (0.0, -9.81, 0.0))
     assert abs(o.yaw_deg - first[0]) < 1e-6
     assert abs(o.pitch_deg - first[1]) < 1e-6
     assert abs(o.roll_deg - first[2]) < 1e-6
@@ -215,11 +215,13 @@ def test_ref_mode_stable_without_motion():
 def test_ref_mode_yaw_changes_with_gyro_y():
     o = ComplementaryOrientation(use_gravity_ref=False, fusion_mode="ref")
     for _ in range(100):
-        o.update(0.01, (0.0, 0.0, 0.0), (0.0, 0.0, 9.81))
+        o.update(0.01, (0.0, 0.0, 0.0), (0.0, -9.81, 0.0))
     start = o.yaw_deg
     for _ in range(100):
-        o.update(0.01, (0.0, 1.0, 0.0), (0.0, 0.0, 9.81))
-    assert abs(o.yaw_deg - start) > 5.0
+        o.update(0.01, (0.0, 1.0, 0.0), (0.0, -9.81, 0.0))
+    # sensor +Y points down: +gyro Y = turn right = positive OpenTrack yaw
+    assert abs(o.yaw_deg - start - math.degrees(1.0)) < 1.0
+    assert abs(o.pitch_deg) < 0.5 and abs(o.roll_deg) < 0.5
 
 
 def test_quat_new_gyro_y_maps_to_pitch_field():

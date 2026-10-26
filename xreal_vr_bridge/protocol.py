@@ -2,6 +2,7 @@ import math
 import struct
 
 FRAME_SIZE = 134
+TIMESTAMP_OFFSET = 14  # u64 LE, device clock in nanoseconds (~1 ms steps)
 GYRO_OFFSET = 34
 ACCEL_OFFSET = 46
 TEMP_OFFSET = 70
@@ -12,12 +13,13 @@ VALID_MAGICS = (MAGIC_A, MAGIC_B)
 
 
 class IMUFrame:
-    __slots__ = ("gyro", "accel", "temp_c")
+    __slots__ = ("gyro", "accel", "temp_c", "timestamp_ns")
 
-    def __init__(self, gyro, accel, temp_c):
+    def __init__(self, gyro, accel, temp_c, timestamp_ns=0):
         self.gyro = gyro
         self.accel = accel
         self.temp_c = temp_c
+        self.timestamp_ns = timestamp_ns
 
     def __repr__(self):
         gx, gy, gz = self.gyro
@@ -35,7 +37,8 @@ def parse_frame(frame):
     gyro = struct.unpack_from("<fff", frame, GYRO_OFFSET)
     accel = struct.unpack_from("<fff", frame, ACCEL_OFFSET)
     temp_c = struct.unpack_from("<f", frame, TEMP_OFFSET)[0]
-    return IMUFrame(gyro, accel, temp_c)
+    timestamp_ns = struct.unpack_from("<Q", frame, TIMESTAMP_OFFSET)[0]
+    return IMUFrame(gyro, accel, temp_c, timestamp_ns)
 
 
 def is_magic(byte0, byte1):

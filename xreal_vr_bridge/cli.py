@@ -11,6 +11,7 @@ from ctypes import wintypes
 
 from .fusion import AXIS_MAPS, ComplementaryOrientation, GyroBias
 from .opentrack import pack_opentrack
+from .output import PoseSender, QuatOneEuro
 from .protocol import frame_stream
 
 try:
@@ -42,7 +43,25 @@ def quiet_bias_step(bias, gyro, q_state, mean_threshold=QUIET_MEAN_THRESHOLD_RAD
         return bias, (0, (0.0, 0.0, 0.0)), False
     return bias, (q_count, q_sum), False
 
+MAX_FRAME_DT = 0.05
+
+
+def frame_dt(prev_ts_ns, ts_ns, host_dt):
+    """Integration step for one IMU frame.
+
+    Frames arrive in TCP bursts, so the host clock gives ~0 for most frames of
+    a burst and one large gap for the first.  The glasses stamp every frame
+    (u64 ns @ offset 14); use that when it is plausible, else the host clock.
+    """
+    if prev_ts_ns and ts_ns and ts_ns > prev_ts_ns:
+        d = (ts_ns - prev_ts_ns) * 1e-9
+        if 1e-5 <= d <= MAX_FRAME_DT:
+            return d
+    return max(1e-4, min(MAX_FRAME_DT, host_dt))
+
+
 VK_NAMES = {
+    "F8": 0x77,
     "F9": 0x78,
     "F10": 0x79,
     "F11": 0x7A,
@@ -111,7 +130,16 @@ def parse_args(argv=None):
     p.add_argument("--udp-ip", default="127.0.0.1")
     p.add_argument("--udp-port", type=int, default=4242)
     p.add_argument("--calib-samples", type=int, default=500)
-    p.add_argument("--max-rate", type=int, default=120, help="max UDP packets/sec")
+    p.add_argument("--max-rate", type=int, default=500,
+                   help="UDP packets/sec (default 500; VRto3D samples at 2x display Hz)")
+    p.add_argument("--sender", choices=["thread", "inline"], default="thread",
+                   help="thread = send latest pose on a steady clock (default, less judder); "
+                        "inline = old behaviour (send from the IMU loop)")
+    p.add_argument("--smooth", type=float, default=0.0, metavar="HZ",
+                   help="One-Euro smoothing min cutoff in Hz (0 = off; try 2..5). "
+                        "Adaptive: almost no lag on fast turns")
+    p.add_argument("--smooth-beta", type=float, default=0.3,
+                   help="One-Euro speed coefficient (higher = less lag when turning)")
     p.add_argument("--duration", type=float, default=0.0, help="exit after N seconds (0 = run forever)")
     p.add_argument("--dry-run", action="store_true", help="print orientation instead of sending UDP")
     p.add_argument("--verbose", action="store_true")
@@ -121,6 +149,11 @@ def parse_args(argv=None):
                    help="do not recenter automatically after bias calibration")
     p.add_argument("--vrto3d-config", default=DEFAULT_VRTO3D_CONFIG,
                    help="path to VRto3D default_config.json (used by image-parameter keys)")
+    p.add_argument("--recenter-yaw-offset", type=float, default=None, metavar="DEG",
+                   help="heading added after every recenter (180 = face what is behind you, "
+                        "e.g. the SteamVR dashboard). Explicit value wins over the state file")
+    p.add_argument("--flip-hotkey", default="F8",
+                   help="global hotkey: toggle extra 180 deg view flip (default F8)")
     p.add_argument("--recenter-hotkey", default="F9",
                    help="global hotkey for recenter (default F9; works while game has focus)")
     p.add_argument("--axis-hotkey", default="F10",
@@ -139,10 +172,11 @@ def parse_args(argv=None):
                    help="disable continuous gyro bias recalibration while the head is still")
     p.add_argument("--rate-smoothing", type=float, default=0.0,
                    help="exponential rate smoothing factor 0..1 (e.g. 0.2 reduces jitter)")
-    p.add_argument("--fusion-mode", default="ref",
+    p.add_argument("--fusion-mode", default=None,
                    choices=["legacy", "quat_old", "quat_new", "ref"],
                    help="orientation integration mode (default ref = community-validated XREAL "
-                        "pipeline with gravity alignment + bias learning; toggle live with 'f')")
+                        "pipeline with gravity alignment + bias learning; toggle live with 'f'). "
+                        "An explicit value always wins over the saved state file.")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -163,8 +197,13 @@ def print_help():
     print("       p = Pitch-Vorzeichen toggeln (jede Änderung recentert automatisch)")
     print("       s = Diagnose: Roh-Gyro-Werte (Grad/s) live anzeigen (zur Achsen-Prüfung)")
     print("       t/u = YZ-Tilt um +1/-1 Grad (T/U = +5/-5) – nur bei axis_map=default sinnvoll")
-    print("       f = Fusion-Modus wechseln (legacy -> quat_old -> quat_new) – recentert")
+    print("       f = Fusion-Modus wechseln (legacy -> quat_old -> quat_new -> ref) – recentert")
+    print("       R (Shift+r) = nur Blickrichtung (Yaw) zurücksetzen, Neigung bleibt")
+    print("       Im ref-Modus: r/F9 = geradeaus UND waagerecht schauen, dann drücken")
+    print("       (lernt dabei die ~30° Einbauneigung des IMU)")
     print("       Globale Hotkeys: Ctrl+F10 = Tilt -1, Ctrl+F11 = Tilt +1, Ctrl+F12 = Tilt Reset")
+    print("       b / F8 = Ansicht um 180° drehen (z.B. SteamVR-Menü nach vorne) | [ / ] = Blickrichtung -15/+15°")
+    print("       (Offset bleibt bei jedem F9-Recenter erhalten und wird gespeichert)")
 
 
 def load_vrto3d_config(path):
@@ -197,6 +236,7 @@ def save_state(orientation):
             "invert_pitch": orientation.invert_pitch,
             "yz_tilt_deg": orientation.yz_tilt_deg,
             "fusion_mode": orientation.fusion_mode,
+            "yaw_offset_deg": orientation.yaw_offset_deg,
         }
         with open(state_path(), "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
@@ -241,22 +281,85 @@ def build_orientation(args):
     )
 
 
-def calibrate(sock, calib_samples):
-    calib = GyroBias(calib_samples)
-    for frame in frame_stream(sock):
-        calib.feed(frame.gyro)
-        if calib.done:
+CALIB_STILL_SD = math.radians(1.0)   # per-axis std dev of a still window
+CALIB_MAX_BIAS = math.radians(5.0)   # a real MEMS bias is far below this
+CALIB_MAX_WINDOWS = 8                # ~4 s at 1 kHz with 500-sample windows
+
+
+def _median(vals):
+    v = sorted(vals)
+    n = len(v)
+    return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
+
+
+def calib_window_stats(gyros):
+    """(median bias, max per-axis std dev) of one window of raw gyro samples."""
+    med = tuple(_median([g[k] for g in gyros]) for k in range(3))
+    sd = 0.0
+    for k in range(3):
+        m = sum(g[k] for g in gyros) / len(gyros)
+        sd = max(sd, math.sqrt(sum((g[k] - m) ** 2 for g in gyros) / len(gyros)))
+    return med, sd
+
+
+def calibrate(frames, calib_samples, max_windows=CALIB_MAX_WINDOWS, verbose=True):
+    """Robust start-up gyro bias.
+
+    The old version averaged the first ``calib_samples`` frames no matter what
+    the glasses did.  If they were moved/put on during that 0.5 s, the "bias"
+    was several deg/s off and the view kept turning by itself.  Now: windows of
+    ``calib_samples`` frames, accept the first STILL one (median), retry up to
+    ``max_windows`` times, else fall back to zero bias (the ref-mode AHRS
+    learns the bias itself as soon as the head is still).
+
+    frames: iterator from frame_stream().  Pass the SAME iterator to
+    run_stream afterwards, otherwise the frames already buffered by the
+    generator (up to 64 KiB) are silently dropped."""
+    if isinstance(frames, socket.socket):
+        frames = frame_stream(frames)
+    win = []
+    tries = 0
+    for frame in frames:
+        win.append(frame.gyro)
+        if len(win) < calib_samples:
+            continue
+        tries += 1
+        med, sd = calib_window_stats(win)
+        if sd < CALIB_STILL_SD and max(abs(c) for c in med) < CALIB_MAX_BIAS:
+            if verbose:
+                print(f"[calib] Brille ruhig (Streuung {math.degrees(sd):.2f} deg/s) – "
+                      f"Bias übernommen", flush=True)
+            return med
+        if verbose:
+            print(f"[calib] Bewegung erkannt (Streuung {math.degrees(sd):.2f} deg/s) – "
+                  f"Brille bitte still halten ... ({tries}/{max_windows})", flush=True)
+        if tries >= max_windows:
             break
-    return calib.bias
+        win = []
+    if verbose:
+        print("[calib] keine Ruhephase gefunden – starte mit Bias 0, "
+              "wird gelernt sobald die Brille still ist", flush=True)
+    return (0.0, 0.0, 0.0)
 
 
-def run_stream(sock, args, orientation, bias, flags):
+def run_stream(frames, args, orientation, bias, flags):
     (recenter_flag, axis_flag, yaw_flag, pitch_flag,
-     tilt_up_flag, tilt_down_flag, tilt_reset_flag) = flags
+     tilt_up_flag, tilt_down_flag, tilt_reset_flag, *rest) = flags
+    flip_flag = rest[0] if rest else threading.Event()
+
+    def nudge_yaw_offset(delta):
+        orientation.set_yaw_offset(orientation.yaw_offset_deg + delta)
+        save_state(orientation)
+        print(f">>> Blickrichtungs-Offset = {orientation.yaw_offset_deg:+.0f}°")
 
     udp = None
+    sender = None
     if not args.dry_run:
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if getattr(args, "sender", "inline") == "thread":
+            sender = PoseSender(udp, (args.udp_ip, args.udp_port), args.max_rate)
+            sender.start()
+    smoother = QuatOneEuro(getattr(args, "smooth", 0.0), getattr(args, "smooth_beta", 0.3))
 
     def cycle_axis():
         maps = list(AXIS_MAPS)
@@ -304,17 +407,21 @@ def run_stream(sock, args, orientation, bias, flags):
         print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
 
     last = time.monotonic()
+    last_ts = 0
     last_packet = last
     count = 0
     t_start = last
     q_state = (0, (0.0, 0.0, 0.0))
     quiet_calib = not args.disable_quiet_calib and orientation.fusion_mode != "ref"
 
+    if isinstance(frames, socket.socket):
+        frames = frame_stream(frames)
     try:
-        for frame in frame_stream(sock):
+        for frame in frames:
             now = time.monotonic()
-            dt = max(1e-4, min(0.05, now - last))
+            dt = frame_dt(last_ts, frame.timestamp_ns, now - last)
             last = now
+            last_ts = frame.timestamp_ns
             if quiet_calib:
                 bias, q_state, updated = quiet_bias_step(bias, frame.gyro, q_state)
                 if updated:
@@ -334,7 +441,10 @@ def run_stream(sock, args, orientation, bias, flags):
                 )
                 print(
                     f"[diagnose] gyro deg/s  X={math.degrees(raw[0]):+8.2f}  "
-                    f"Y={math.degrees(raw[1]):+8.2f}  Z={math.degrees(raw[2]):+8.2f}",
+                    f"Y={math.degrees(raw[1]):+8.2f}  Z={math.degrees(raw[2]):+8.2f} | "
+                    f"accel X={frame.accel[0]:+6.2f} Y={frame.accel[1]:+6.2f} "
+                    f"Z={frame.accel[2]:+6.2f} | out yaw={orientation.yaw_deg:+7.1f} "
+                    f"pitch={orientation.pitch_deg:+7.1f} roll={orientation.roll_deg:+7.1f}",
                     flush=True,
                 )
 
@@ -357,6 +467,9 @@ def run_stream(sock, args, orientation, bias, flags):
             if tilt_down_flag.is_set():
                 tilt_down_flag.clear()
                 adjust_tilt(-1.0)
+            if flip_flag.is_set():
+                flip_flag.clear()
+                nudge_yaw_offset(180.0)
             if tilt_reset_flag.is_set():
                 tilt_reset_flag.clear()
                 orientation.set_yz_tilt(0.0)
@@ -367,6 +480,9 @@ def run_stream(sock, args, orientation, bias, flags):
                 if ch == "r":
                     orientation.recenter()
                     print(">>> Recenter: geradeaus ausgerichtet")
+                elif ch == "R":
+                    orientation.recenter("yaw")
+                    print(">>> Recenter: nur Blickrichtung (Yaw)")
                 elif ch == "q":
                     print("Beende auf Wunsch")
                     return False
@@ -422,6 +538,12 @@ def run_stream(sock, args, orientation, bias, flags):
                     adjust_tilt(-5.0)
                 elif ch == "f":
                     cycle_fusion_mode()
+                elif ch == "b":
+                    nudge_yaw_offset(180.0)
+                elif ch == "[":
+                    nudge_yaw_offset(-15.0)
+                elif ch == "]":
+                    nudge_yaw_offset(15.0)
 
             if args.dry_run:
                 if count == 1 or count % 100 == 0:
@@ -430,11 +552,11 @@ def run_stream(sock, args, orientation, bias, flags):
                         f"roll={orientation.roll_deg:8.2f} deg gain={orientation.gain:.1f}"
                     )
             else:
-                if now - last_packet >= 1.0 / max(1, args.max_rate):
-                    packet = pack_opentrack(
-                        0.0, 0.0, 0.0,
-                        orientation.yaw_deg, orientation.pitch_deg, orientation.roll_deg,
-                    )
+                out = smoother.filter_euler(*orientation.output_euler(), dt)
+                if sender is not None:
+                    sender.update(*out)
+                elif now - last_packet >= 1.0 / max(1, args.max_rate):
+                    packet = pack_opentrack(0.0, 0.0, 0.0, *out)
                     udp.sendto(packet, (args.udp_ip, args.udp_port))
                     last_packet = now
 
@@ -454,6 +576,8 @@ def run_stream(sock, args, orientation, bias, flags):
 
         return count
     finally:
+        if sender is not None:
+            sender.stop()
         if udp is not None:
             udp.close()
 
@@ -464,13 +588,31 @@ def main(argv=None):
     saved = load_state()
     if saved is not None and "yz_tilt_deg" in saved:
         args.yz_tilt = float(saved["yz_tilt_deg"])
-    if saved is not None and "fusion_mode" in saved:
-        if saved["fusion_mode"] in ComplementaryOrientation.FUSION_MODES:
+    if args.recenter_yaw_offset is None:
+        args.recenter_yaw_offset = float((saved or {}).get("yaw_offset_deg", 0.0))
+    if args.fusion_mode is None:
+        args.fusion_mode = "ref"
+        if saved is not None and saved.get("fusion_mode") in ComplementaryOrientation.FUSION_MODES:
             args.fusion_mode = saved["fusion_mode"]
+            print(f"(Fusion-Modus '{args.fusion_mode}' aus {state_path()} übernommen; "
+                  f"überschreiben mit --fusion-mode ref)")
+    print(f"Fusion-Modus: {args.fusion_mode}")
+    print(f"Ausgabe: {args.max_rate} Pakete/s ({args.sender}), Glättung: "
+          + (f"One-Euro {args.smooth:g} Hz / beta {args.smooth_beta:g}" if args.smooth > 0 else "aus"))
+    if args.fusion_mode != "ref":
+        print("WARNUNG: Modus '%s' integriert Euler-Winkel getrennt – nach starkem Hoch/Runter-"
+              "Schauen bleibt die Welt schief. Empfohlen: --fusion-mode ref" % args.fusion_mode)
+    elif args.no_gravity_ref:
+        print("Hinweis: --no-gravity-ref schaltet im ref-Modus die Schwerkraft-Korrektur ab "
+              "(Neigung kann driften). Für ref-Modus weglassen.")
 
     orientation = build_orientation(args)
+    orientation.set_yaw_offset(args.recenter_yaw_offset)
+    if orientation.yaw_offset_deg:
+        print(f"Blickrichtungs-Offset nach Recenter: {orientation.yaw_offset_deg:+.0f}° "
+              f"(F8/b = 180° drehen, [ / ] = ±15°)")
     if not args.no_auto_recenter:
-        orientation.recenter()
+        orientation.recenter("auto")
 
     recenter_flag = threading.Event()
     axis_flag = threading.Event()
@@ -479,6 +621,7 @@ def main(argv=None):
     tilt_up_flag = threading.Event()
     tilt_down_flag = threading.Event()
     tilt_reset_flag = threading.Event()
+    flip_flag = threading.Event()
 
     hotkey_names = [
         args.recenter_hotkey,
@@ -488,6 +631,7 @@ def main(argv=None):
         args.tilt_up_hotkey,
         args.tilt_down_hotkey,
         args.tilt_reset_hotkey,
+        args.flip_hotkey,
     ]
     bindings = [
         (*parse_hotkey_ex(hotkey_names[0]), lambda: recenter_flag.set()),
@@ -497,6 +641,7 @@ def main(argv=None):
         (*parse_hotkey_ex(hotkey_names[4]), lambda: tilt_up_flag.set()),
         (*parse_hotkey_ex(hotkey_names[5]), lambda: tilt_down_flag.set()),
         (*parse_hotkey_ex(hotkey_names[6]), lambda: tilt_reset_flag.set()),
+        (*parse_hotkey_ex(hotkey_names[7]), lambda: flip_flag.set()),
     ]
     hotkey = None
     if os.name == "nt":
@@ -513,7 +658,7 @@ def main(argv=None):
     print_help()
 
     flags = (recenter_flag, axis_flag, yaw_flag, pitch_flag,
-             tilt_up_flag, tilt_down_flag, tilt_reset_flag)
+             tilt_up_flag, tilt_down_flag, tilt_reset_flag, flip_flag)
 
     while True:
         try:
@@ -522,11 +667,15 @@ def main(argv=None):
             sock.settimeout(10.0)
             print("connected")
 
-            bias = calibrate(sock, args.calib_samples)
+            frames = frame_stream(sock)
+            bias = calibrate(frames, args.calib_samples)
             print(f"gyro bias (rad/s): {bias[0]:+.5f}, {bias[1]:+.5f}, {bias[2]:+.5f}")
 
             if not args.no_auto_recenter:
-                orientation.recenter()
+                orientation.recenter("auto")
+                if orientation.fusion_mode == "ref":
+                    print("Recenter: automatisch, sobald die Brille aufrecht und still ist "
+                          "(auf dem Kopf geradeaus schauen; jederzeit F9 = neu ausrichten)")
                 print(
                     f"Recenter (geradeaus): Initial ausgerichtet nach Kalibrierung "
                     f"[axis_map={orientation.axis_map} yaw_sign={'I' if orientation.invert_yaw else '+'} "
@@ -534,7 +683,7 @@ def main(argv=None):
                     f"tilt={orientation.yz_tilt_deg:+.1f}deg]"
                 )
 
-            result = run_stream(sock, args, orientation, bias, flags)
+            result = run_stream(frames, args, orientation, bias, flags)
             sock.close()
             if result is False:
                 return
