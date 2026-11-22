@@ -45,15 +45,34 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
     $PSNativeCommandUseErrorActionPreference = $false
 }
 
+# No slash or backslash: Windows treats those as path separators inside a .lnk name.
 $ShortcutNames = @(
-    'XREAL Bridge (SteamVR/Apps, offset 180)',
-    'XREAL Bridge (Games/UEVR, offset 0)',
+    'XREAL Bridge (SteamVR and Apps, offset 180)',
+    'XREAL Bridge (Games and UEVR, offset 0)',
     'XREAL OpenXR via SteamVR (this app only)'
 )
 
 function Write-Step([string]$Message) {
     Write-Host ""
     Write-Host "== $Message"
+}
+
+function Invoke-Native {
+    # Native programs write to stderr and return non-zero on purpose (py when
+    # a version is missing, robocopy when it copies files, winget progress).
+    # ErrorActionPreference Stop would turn that into a terminating error
+    # before the caller can read $LASTEXITCODE.
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command
+        if ($null -eq $LASTEXITCODE) { $global:LASTEXITCODE = 0 }
+    } catch {
+        if (-not $LASTEXITCODE) { $global:LASTEXITCODE = 1 }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
 }
 
 function Read-YesNo([string]$Prompt, [bool]$DefaultYes) {
@@ -79,7 +98,11 @@ function Get-SuggestedInstallDir {
 
 function Test-Python311Plus([string]$Exe) {
     if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $false }
-    $ver = & $Exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+    try {
+        $ver = & $Exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+    } catch {
+        return $false
+    }
     if ($LASTEXITCODE -ne 0 -or -not $ver) { return $false }
     $parts = $ver.Trim().Split('.')
     if ($parts.Length -lt 2) { return $false }
@@ -95,11 +118,21 @@ function Find-PythonExe {
     }
     $launcher = Get-Command py -ErrorAction SilentlyContinue
     if ($launcher) {
-        foreach ($spec in @('-3.12', '-3.13', '-3.11', '-3')) {
-            $exe = & py $spec -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and (Test-Python311Plus $exe.Trim())) {
-                return $exe.Trim()
+        # A missing interpreter (py -3.12 when only 3.13 is installed) writes an
+        # error and, with ErrorActionPreference Stop, aborts the whole installer.
+        # Any 3.11+ is fine, including 3.13. Try the next spec instead.
+        foreach ($spec in @('-3.13', '-3.12', '-3.11', '-3')) {
+            $exe = $null
+            $code = 1
+            try {
+                $exe = & py $spec -c "import sys; print(sys.executable)" 2>$null
+                $code = $LASTEXITCODE
+            } catch {
+                continue
             }
+            if ($code -ne 0 -or -not $exe) { continue }
+            $exePath = "$((@($exe) | Select-Object -Last 1))".Trim()
+            if (Test-Python311Plus $exePath) { return $exePath }
         }
     }
     $candidates = @(
@@ -124,7 +157,7 @@ Install Python 3.12 from https://www.python.org/downloads/ (check 'Add python.ex
 "@
     }
     Write-Host "Installing Python 3.12 for the current user with winget..."
-    & winget install --id Python.Python.3.12 -e --scope user --accept-package-agreements --accept-source-agreements
+    Invoke-Native { & winget install --id Python.Python.3.12 -e --scope user --accept-package-agreements --accept-source-agreements }
     # 0 = installed. -1978335189 = already installed, nothing to do.
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) {
         throw "winget could not install Python 3.12 (exit $LASTEXITCODE)."
@@ -198,9 +231,11 @@ function Copy-Project([string]$From, [string]$To) {
     New-Item -ItemType Directory -Force -Path $To | Out-Null
     Write-Host "Copying the project to $To"
     Write-Host "(existing files there are kept; nothing is deleted)"
-    & robocopy $From $To /E /NFL /NDL /NJH /NJS /nc /ns /np `
-        /XD .git .venv venv __pycache__ .pytest_cache .mypy_cache `
-        /XF .xreal-install.json
+    Invoke-Native {
+        & robocopy $From $To /E /NFL /NDL /NJH /NJS /nc /ns /np `
+            /XD .git .venv venv __pycache__ .pytest_cache .mypy_cache `
+            /XF .xreal-install.json
+    }
     if ($LASTEXITCODE -ge 8) {
         throw "Could not copy the project (robocopy exit $LASTEXITCODE)."
     }
@@ -219,7 +254,7 @@ function Initialize-VirtualEnvironment([string]$BasePython, [string]$Target) {
         Rename-Item -LiteralPath $venvDir -NewName $brokenName
     }
     Write-Host "Creating a virtual environment"
-    & $BasePython -m venv $venvDir
+    Invoke-Native { & $BasePython -m venv $venvDir }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $venvPython)) {
         throw "Could not create the virtual environment."
     }
@@ -257,7 +292,7 @@ function Install-Vrto3dDriver([string]$SteamVrRoot) {
             return
         }
         New-Item -ItemType Directory -Force -Path (Join-Path $SteamVrRoot 'drivers') | Out-Null
-        & robocopy $found.Directory.FullName $dest /E /NFL /NDL /NJH /NJS /nc /ns /np
+        Invoke-Native { & robocopy $found.Directory.FullName $dest /E /NFL /NDL /NJH /NJS /nc /ns /np }
         if ($LASTEXITCODE -ge 8) {
             Write-Host "Could not copy the VRto3D driver (robocopy exit $LASTEXITCODE)."
             Write-Host "Copy the vrto3d folder by hand to $dest"
@@ -324,7 +359,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $scriptRoot 'pyproject.toml'))) {
 $target = Resolve-InstallDir $scriptRoot
 Write-Step "Install folder"
 Write-Host $target
-if (-not (Same-Path $scriptRoot $target)) {
+if (-not (Test-SamePath $scriptRoot $target)) {
     Copy-Project $scriptRoot $target
 }
 
@@ -340,9 +375,9 @@ if (-not $base) {
 Write-Host "Using $base"
 $venvPython = Initialize-VirtualEnvironment $base $target
 Write-Host "Installing the bridge into the virtual environment"
-& $venvPython -m pip install --upgrade pip
+Invoke-Native { & $venvPython -m pip install --upgrade pip }
 if ($LASTEXITCODE -ne 0) { throw "pip could not upgrade itself." }
-& $venvPython -m pip install -e $target
+Invoke-Native { & $venvPython -m pip install -e $target }
 if ($LASTEXITCODE -ne 0) { throw "Could not install the bridge." }
 
 $steamRoot = $null
@@ -379,7 +414,7 @@ if (-not $SkipVRto3D) {
                 if ($PSBoundParameters.ContainsKey('DisplayIndex') -and -not [string]::IsNullOrWhiteSpace($DisplayIndex)) {
                     $chosen = [int]$DisplayIndex
                 } else {
-                    $reportRaw = & $venvPython -m xreal_vr_bridge.vrto3d --report
+                    $reportRaw = Invoke-Native { & $venvPython -m xreal_vr_bridge.vrto3d --report }
                     if ($LASTEXITCODE -ne 0) { throw "Could not list displays." }
                     $report = $reportRaw | ConvertFrom-Json
                     Write-Host ""
@@ -414,7 +449,7 @@ if (-not $SkipVRto3D) {
                     }
                 }
                 if ($null -ne $chosen) { $indexArg = @('--display-index', "$chosen") }
-                $applyRaw = & $venvPython -m xreal_vr_bridge.vrto3d --apply --config $configPath @indexArg
+                $applyRaw = Invoke-Native { & $venvPython -m xreal_vr_bridge.vrto3d --apply --config $configPath @indexArg }
                 $applyCode = $LASTEXITCODE
                 if ($applyCode -eq 1) { throw "Could not update the VRto3D config: $applyRaw" }
                 $apply = $applyRaw | ConvertFrom-Json
@@ -485,7 +520,7 @@ $marker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $markerPath -Encodi
 
 Write-Step "Ready"
 Write-Host "1. On the glasses: Follow mode, stabilizer off, 3840x1080 side-by-side where the glasses offer it."
-Write-Host "2. Start 'XREAL Bridge (SteamVR/Apps, offset 180)' and hold the glasses still for a few seconds."
+Write-Host "2. Start 'XREAL Bridge (SteamVR and Apps, offset 180)' and hold the glasses still for a few seconds."
 Write-Host "   The window should say 'Fusion mode: ref' and 'Glasses are still'."
 Write-Host "3. Start SteamVR. For a UEVR game, use the offset 0 shortcut instead, and inject with OpenVR."
 Write-Host "4. OpenXR apps that should use the glasses: use 'XREAL OpenXR via SteamVR (this app only)'."

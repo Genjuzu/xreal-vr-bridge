@@ -23,8 +23,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ShortcutNames = @(
-    'XREAL Bridge (SteamVR/Apps, offset 180).lnk',
-    'XREAL Bridge (Games/UEVR, offset 0).lnk',
+    'XREAL Bridge (SteamVR and Apps, offset 180).lnk',
+    'XREAL Bridge (Games and UEVR, offset 0).lnk',
     'XREAL OpenXR via SteamVR (this app only).lnk'
 )
 

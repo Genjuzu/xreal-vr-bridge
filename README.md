@@ -13,8 +13,8 @@ This project does **not** change the Windows OpenXR runtime. A Quest via Virtual
 3. Clone this repository and double-click `install.bat`.
 4. Press Enter to install to `D:\VR\xreal-vr-bridge` when `D:` exists, otherwise `%USERPROFILE%\xreal-vr-bridge`. Type `.` to set the clone up where it already is. Type any other folder to use that instead.
 5. Put the glasses on and hold still for a few seconds while the window says it is calibrating.
-6. Start **XREAL Bridge (SteamVR/Apps, offset 180)**, then start SteamVR.
-7. For a UEVR game, quit that shortcut and start **XREAL Bridge (Games/UEVR, offset 0)** instead. In UEVR, inject with **OpenVR**, not OpenXR.
+6. Start **XREAL Bridge (SteamVR and Apps, offset 180)**, then start SteamVR.
+7. For a UEVR game, quit that shortcut and start **XREAL Bridge (Games and UEVR, offset 0)** instead. In UEVR, inject with **OpenVR**, not OpenXR.
 
 The bridge window should say `Fusion mode: ref` and `Glasses are still`.
 
@@ -90,8 +90,8 @@ Download VRto3D from its [latest release](https://github.com/oneup03/VRto3D/rele
 
 | Shortcut | Command | Use it for |
 |---|---|---|
-| XREAL Bridge (SteamVR/Apps, offset 180) | `--recenter-yaw-offset 180` | SteamVR home and Unity apps. Without the half-turn, the SteamVR menu sits behind you. |
-| XREAL Bridge (Games/UEVR, offset 0) | `--recenter-yaw-offset 0` | UEVR and other games, where forward should stay forward. |
+| XREAL Bridge (SteamVR and Apps, offset 180) | `--recenter-yaw-offset 180` | SteamVR home and Unity apps. Without the half-turn, the SteamVR menu sits behind you. |
+| XREAL Bridge (Games and UEVR, offset 0) | `--recenter-yaw-offset 0` | UEVR and other games, where forward should stay forward. |
 
 `180` and `-180` are the same half-turn. The status line prints angles from -180 to 180, so the SteamVR shortcut shows `yaw -180 deg`. That is the offset you asked for.
 
