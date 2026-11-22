@@ -21,3 +21,4 @@ Thumbs.db
 
 # Local logs / captures
 *.log
+.xreal-install.json

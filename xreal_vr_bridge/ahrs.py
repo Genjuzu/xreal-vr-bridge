@@ -2,7 +2,7 @@
 
 Frames
 ------
-* Sensor frame of the One / One Pro IMU (measured, see README "Achsen-Check"):
+* Sensor frame of the One / One Pro IMU (measured, see README "Axis check"):
   X = right, Y = down, Z = forward (RDF).  Gyro: +X = look up, +Y = turn right,
   +Z = tilt to the right shoulder.  At rest the accelerometer reads +9.81 m/s^2
   along "up", i.e. about (0, -9.8, 0) when the glasses are level.

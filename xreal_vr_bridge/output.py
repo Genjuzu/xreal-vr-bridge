@@ -92,7 +92,9 @@ class PoseSender(threading.Thread):
         self.period = 1.0 / max(1, int(rate_hz))
         self._pose = None
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        # Not named _stop: Thread.join() calls Thread._stop(), and an Event
+        # stored under that name makes shutdown raise TypeError on Python 3.12+.
+        self._halt = threading.Event()
         self.sent = 0
 
     def update(self, yaw, pitch, roll):
@@ -112,7 +114,7 @@ class PoseSender(threading.Thread):
 
     def run(self):
         nxt = time.perf_counter()
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             self._send()
             nxt += self.period
             delay = nxt - time.perf_counter()
@@ -125,7 +127,7 @@ class PoseSender(threading.Thread):
                 nxt = time.perf_counter()  # fell behind: resync, no catch-up burst
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
         if self.is_alive():
             self.join(timeout=1.0)
         self._send()  # final pose

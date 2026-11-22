@@ -142,8 +142,9 @@ def parse_args(argv=None):
     p.add_argument("--udp-ip", default="127.0.0.1")
     p.add_argument("--udp-port", type=int, default=4242)
     p.add_argument("--calib-samples", type=int, default=500)
-    p.add_argument("--max-rate", type=int, default=500,
-                   help="UDP packets/sec (default 500; VRto3D samples at 2x display Hz)")
+    p.add_argument("--max-rate", type=int, default=250,
+                   help="UDP packets/sec (default 250). VRto3D samples at twice the "
+                        "display rate; 250 leaves headroom over a 120 Hz sample clock")
     p.add_argument("--sender", choices=["thread", "inline"], default="thread",
                    help="thread = send latest pose on a steady clock (default, less judder); "
                         "inline = old behaviour (send from the IMU loop)")
@@ -156,15 +157,17 @@ def parse_args(argv=None):
     p.add_argument("--dry-run", action="store_true", help="print orientation instead of sending UDP")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--no-gravity-ref", action="store_true",
-                   help="use gyro-only integration (no accelerometer pull); recommended for VR")
+                   help="disable accelerometer gravity correction. Leave this off with "
+                        "the default ref mode; pitch and roll can drift without it")
     p.add_argument("--no-auto-recenter", action="store_true",
                    help="do not recenter automatically after bias calibration")
     p.add_argument("--vrto3d-config", default=DEFAULT_VRTO3D_CONFIG,
                    help="path to VRto3D default_config.json (used by image-parameter keys)")
-    p.add_argument("--recenter-yaw-offset", type=float, default=None, metavar="DEG",
-                   help="heading added after every recenter (180 = face what is behind you, "
-                        "e.g. the SteamVR dashboard). Default for Backspace; a position saved "
-                        "with Enter wins")
+    p.add_argument("--recenter-yaw-offset", type=float, default=0.0, metavar="DEG",
+                   help="heading added after every recenter. 180 faces SteamVR home "
+                        "(the menu sits behind you otherwise); 0 for UEVR games. "
+                        "Backspace returns to this value. A pose saved with Enter "
+                        "is restored at the next start until you press Backspace")
     p.add_argument("--recenter-pitch-offset", type=float, default=0.0, metavar="DEG",
                    help="pitch added after every recenter (+ = view up); default for Backspace")
     p.add_argument("--align-modifier", default="Ctrl+Alt",
@@ -190,11 +193,11 @@ def parse_args(argv=None):
                    help="disable continuous gyro bias recalibration while the head is still")
     p.add_argument("--rate-smoothing", type=float, default=0.0,
                    help="exponential rate smoothing factor 0..1 (e.g. 0.2 reduces jitter)")
-    p.add_argument("--fusion-mode", default=None,
+    p.add_argument("--fusion-mode", default="ref",
                    choices=["legacy", "quat_old", "quat_new", "ref"],
-                   help="orientation integration mode (default ref = community-validated XREAL "
-                        "pipeline with gravity alignment + bias learning; toggle live with 'f'). "
-                        "An explicit value always wins over the saved state file.")
+                   help="orientation mode (default ref: quaternion AHRS, gravity "
+                        "alignment, bias learning). The f key changes it for this "
+                        "session only; the next start uses this flag again")
     p.add_argument("--axis-map", default="default",
                    choices=["default", "swap_yz", "swap_xy", "rotate"],
                    help="gyro axis -> (pitch,yaw,roll) mapping. default: (X,Y,Z). "
@@ -208,22 +211,22 @@ def parse_args(argv=None):
 
 
 def print_help():
-    print("[Menü] r = Recenter (geradeaus) | h = Hilfe | q = Ende")
-    print("       +/- = Empfindlichkeit (0.1 Schritte) | 1/2/3 = Bild-Param wählen (Tiefe/Konvergenz/FOV)")
-    print("       Im Bild-Param-Modus ändern +/- den Wert (schreibt VRto3D-Config); 0 = Modus verlassen")
-    print("       a = Achsen-Mapping wechseln (wenn links/rechts die Welt kippt) | y = Yaw-Vorzeichen toggeln")
-    print("       p = Pitch-Vorzeichen toggeln (jede Änderung recentert automatisch)")
-    print("       s = Diagnose: Roh-Gyro-Werte (Grad/s) live anzeigen (zur Achsen-Prüfung)")
-    print("       t/u = YZ-Tilt um +1/-1 Grad (T/U = +5/-5) – nur bei axis_map=default sinnvoll")
-    print("       f = Fusion-Modus wechseln (legacy -> quat_old -> quat_new -> ref) – recentert")
-    print("       R (Shift+r) = nur Blickrichtung (Yaw) zurücksetzen, Neigung bleibt")
-    print("       Im ref-Modus: r/F9 = geradeaus UND waagerecht schauen, dann drücken")
-    print("       (lernt dabei die ~30° Einbauneigung des IMU)")
-    print("       Globale Hotkeys: Ctrl+F10 = Tilt -1, Ctrl+F11 = Tilt +1, Ctrl+F12 = Tilt Reset")
-    print("       Ausrichten: Pfeil links/rechts = Blickrichtung ±5° (Shift = 1°), Pfeil hoch/runter = Neigung")
-    print("       Enter = Ausrichtung speichern (bleibt bei F9 und Neustart) | Backspace = Standard")
-    print("       Im Spiel: Ctrl+Alt+Pfeile / Ctrl+Alt+Enter / Ctrl+Alt+Backspace")
-    print("       b / F8 = Ansicht um 180° drehen | [ / ] = Blickrichtung -15/+15°")
+    print("[keys] Bridge window: r recenter | R yaw only | h help | q quit | s diagnostic")
+    print("       +/- sensitivity by 0.1 (or the VRto3D value while 1/2/3 is active)")
+    print("       1 depth | 2 convergence | 3 FOV | 0 leave that editor")
+    print("       After 1/2/3, press Ctrl+Shift+F10 in the VR window to reload VRto3D")
+    print("       a cycle axis map | y toggle yaw sign | p toggle pitch sign (each recenters)")
+    print("       f cycle fusion mode for this session (legacy, quat_old, quat_new, ref)")
+    print("       t/T YZ tilt +1/+5 deg | u/U -1/-5 (not used by the default ref mode)")
+    print("       Left/Right yaw -5/+5 | Up/Down pitch +5/-5 | hold Shift for 1 deg")
+    print("       Enter save alignment | Backspace restore this launch's offset")
+    print("       b or F8 add 180 deg | [ / ] yaw -15 / +15")
+    print("       In ref mode, look straight ahead and level, then press r or F9")
+    print("       (that learns the IMU mount tilt, about 30 deg on the One Pro)")
+    print("       Global, while a game is focused:")
+    print("       F8 flip 180 | F9 recenter | F10 cycle axis map | F11 yaw sign | F12 pitch sign")
+    print("       Ctrl+F10 tilt -1 | Ctrl+F11 tilt +1 | Ctrl+F12 tilt reset")
+    print("       Ctrl+Alt+arrows / Enter / Backspace = alignment (add Shift for 1 deg)")
 
 
 def load_vrto3d_config(path):
@@ -342,7 +345,7 @@ def apply_align_action(orientation, action, value, defaults):
     which stores them as the calibrated position (state file; survives F9 and
     restarts).  'reset' (Backspace) returns to the start defaults
     (--recenter-yaw-offset / --recenter-pitch-offset) and forgets the saved
-    position.  Returns a short German status line."""
+    position.  Returns a short status line."""
     if action == "yaw":
         orientation.set_yaw_offset(orientation.yaw_offset_deg + value)
     elif action == "pitch":
@@ -350,17 +353,17 @@ def apply_align_action(orientation, action, value, defaults):
     elif action == "save":
         orientation.aligned_offsets = (orientation.yaw_offset_deg, orientation.pitch_offset_deg)
         save_state(orientation)
-        return (f">>> Ausrichtung gespeichert: Yaw {orientation.yaw_offset_deg:+.0f}°, "
-                f"Pitch {orientation.pitch_offset_deg:+.0f}°")
+        return (f">>> Alignment saved: yaw {orientation.yaw_offset_deg:+.0f} deg, "
+                f"pitch {orientation.pitch_offset_deg:+.0f} deg")
     elif action == "reset":
         orientation.set_yaw_offset(defaults[0])
         orientation.set_pitch_offset(defaults[1])
         orientation.aligned_offsets = None
         save_state(orientation)
-        return (f">>> Ausrichtung zurückgesetzt: Yaw {orientation.yaw_offset_deg:+.0f}°, "
-                f"Pitch {orientation.pitch_offset_deg:+.0f}°")
-    return (f">>> Ausrichtung: Yaw {orientation.yaw_offset_deg:+.0f}°, "
-            f"Pitch {orientation.pitch_offset_deg:+.0f}° (Enter = speichern)")
+        return (f">>> Alignment reset: yaw {orientation.yaw_offset_deg:+.0f} deg, "
+                f"pitch {orientation.pitch_offset_deg:+.0f} deg")
+    return (f">>> Alignment: yaw {orientation.yaw_offset_deg:+.0f} deg, "
+            f"pitch {orientation.pitch_offset_deg:+.0f} deg (Enter = save)")
 
 
 def build_orientation(args):
@@ -421,18 +424,18 @@ def calibrate(frames, calib_samples, max_windows=CALIB_MAX_WINDOWS, verbose=True
         med, sd = calib_window_stats(win)
         if sd < CALIB_STILL_SD and max(abs(c) for c in med) < CALIB_MAX_BIAS:
             if verbose:
-                print(f"[calib] Brille ruhig (Streuung {math.degrees(sd):.2f} deg/s) – "
-                      f"Bias übernommen", flush=True)
+                print(f"[calib] Glasses are still (spread {math.degrees(sd):.2f} deg/s) – "
+                      f"bias accepted", flush=True)
             return med
         if verbose:
-            print(f"[calib] Bewegung erkannt (Streuung {math.degrees(sd):.2f} deg/s) – "
-                  f"Brille bitte still halten ... ({tries}/{max_windows})", flush=True)
+            print(f"[calib] Motion detected (spread {math.degrees(sd):.2f} deg/s) – "
+                  f"hold the glasses still ... ({tries}/{max_windows})", flush=True)
         if tries >= max_windows:
             break
         win = []
     if verbose:
-        print("[calib] keine Ruhephase gefunden – starte mit Bias 0, "
-              "wird gelernt sobald die Brille still ist", flush=True)
+        print("[calib] No still period found – starting with bias 0. "
+              "It is learned once the glasses are still", flush=True)
     return (0.0, 0.0, 0.0)
 
 
@@ -464,29 +467,29 @@ def run_stream(frames, args, orientation, bias, flags):
         orientation.recenter()
         save_state(orientation)
         print(
-            f">>> Achsen-Mapping = {orientation.axis_map} "
-            f"(pitch/yaw/roll <- {AXIS_MAPS[orientation.axis_map]}) – recenter"
+            f">>> Axis map = {orientation.axis_map} "
+            f"(pitch/yaw/roll <- {AXIS_MAPS[orientation.axis_map]}) – recentered"
         )
 
     def toggle_yaw():
         orientation.set_invert_yaw(not orientation.invert_yaw)
         orientation.recenter()
         save_state(orientation)
-        print(f">>> Yaw-Vorzeichen = {'invertiert' if orientation.invert_yaw else 'normal'} – recenter")
+        print(f">>> Yaw sign = {'inverted' if orientation.invert_yaw else 'normal'} – recentered")
 
     def toggle_pitch():
         orientation.set_invert_pitch(not orientation.invert_pitch)
         orientation.recenter()
         save_state(orientation)
-        print(f">>> Pitch-Vorzeichen = {'invertiert' if orientation.invert_pitch else 'normal'} – recenter")
+        print(f">>> Pitch sign = {'inverted' if orientation.invert_pitch else 'normal'} – recentered")
 
     def adjust_tilt(delta):
         if orientation.axis_map != "default":
-            print(">>> Tilt nur bei axis_map=default sinnvoll (erst a drücken)")
+            print(">>> YZ tilt only applies to axis map 'default' (press a to cycle)")
             return
         orientation.set_yz_tilt(orientation.yz_tilt_deg + delta)
         save_state(orientation)
-        print(f">>> YZ-Tilt = {orientation.yz_tilt_deg:+.1f}°")
+        print(f">>> YZ tilt = {orientation.yz_tilt_deg:+.1f} deg")
 
     def cycle_fusion_mode():
         modes = list(ComplementaryOrientation.FUSION_MODES)
@@ -494,13 +497,13 @@ def run_stream(frames, args, orientation, bias, flags):
         orientation.set_fusion_mode(modes[(idx + 1) % len(modes)])
         orientation.recenter()
         save_state(orientation)
-        print(f">>> Fusion-Modus = {orientation.fusion_mode} – recenter")
+        print(f">>> Fusion mode = {orientation.fusion_mode} for this session – recentered")
 
     edit_param = None
     diagnose = False
     vr_cfg = load_vrto3d_config(args.vrto3d_config)
     if vr_cfg is None:
-        print(f"(Hinweis: VRto3D-Config nicht gefunden unter {args.vrto3d_config} – Bild-Param-Tasten inaktiv)")
+        print(f"(Note: VRto3D config not found at {args.vrto3d_config} – image-parameter keys do nothing)")
 
     last = time.monotonic()
     last_ts = 0
@@ -522,7 +525,7 @@ def run_stream(frames, args, orientation, bias, flags):
                 bias, q_state, updated = quiet_bias_step(bias, frame.gyro, q_state)
                 if updated:
                     print(
-                        f"[calib] Gyro-Bias während Stillstand aktualisiert: "
+                        f"[calib] Gyro bias updated while still: "
                         f"{bias[0]:+.5f}, {bias[1]:+.5f}, {bias[2]:+.5f} rad/s",
                         flush=True,
                     )
@@ -547,7 +550,7 @@ def run_stream(frames, args, orientation, bias, flags):
             if recenter_flag.is_set():
                 recenter_flag.clear()
                 orientation.recenter()
-                print(">>> Recenter (Hotkey): geradeaus ausgerichtet")
+                print(">>> Recenter (hotkey): looking straight ahead")
             if axis_flag.is_set():
                 axis_flag.clear()
                 cycle_axis()
@@ -575,23 +578,23 @@ def run_stream(frames, args, orientation, bias, flags):
                 tilt_reset_flag.clear()
                 orientation.set_yz_tilt(0.0)
                 save_state(orientation)
-                print(">>> YZ-Tilt auf 0 zurückgesetzt")
+                print(">>> YZ tilt reset to 0")
 
             for ch in poll_keys():
                 if ch == "r":
                     orientation.recenter()
-                    print(">>> Recenter: geradeaus ausgerichtet")
+                    print(">>> Recenter: looking straight ahead")
                 elif ch == "R":
                     orientation.recenter("yaw")
-                    print(">>> Recenter: nur Blickrichtung (Yaw)")
+                    print(">>> Recenter: yaw only")
                 elif ch == "q":
-                    print("Beende auf Wunsch")
+                    print("Stopping")
                     return False
                 elif ch == "h":
                     print_help()
                 elif ch == "s":
                     diagnose = not diagnose
-                    print(f">>> Diagnose {'an' if diagnose else 'aus'} (zeigt Roh-Gyro in Grad/s)")
+                    print(f">>> Diagnostic {'on' if diagnose else 'off'} (raw gyro in deg/s)")
                 elif ch == "+" or ch == "=":
                     if edit_param:
                         # re-read: VRto3D OSD / other tools may have changed the file
@@ -600,12 +603,12 @@ def run_stream(frames, args, orientation, bias, flags):
                         lo, hi, step = PARAM_RANGES[edit_param]
                         vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, lo) + step)), 2)
                         if save_vrto3d_config(args.vrto3d_config, vr_cfg):
-                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; jetzt im Spiel/VR-Fenster Ctrl+Shift+F10 drücken = Neuladen, Piepton)")
+                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (wrote VRto3D config; press Ctrl+Shift+F10 in the VR window to reload)")
                         else:
-                            print(">>> Fehler beim Schreiben der VRto3D-Config")
+                            print(">>> Could not write the VRto3D config")
                     else:
                         orientation.set_gain(orientation.gain + 0.1)
-                        print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
+                        print(f">>> Sensitivity = {orientation.gain:.1f}")
                 elif ch == "-":
                     if edit_param:
                         vr_cfg = load_vrto3d_config(args.vrto3d_config) or vr_cfg
@@ -613,23 +616,23 @@ def run_stream(frames, args, orientation, bias, flags):
                         lo, hi, step = PARAM_RANGES[edit_param]
                         vr_cfg[edit_param] = round(min(hi, max(lo, vr_cfg.get(edit_param, hi) - step)), 2)
                         if save_vrto3d_config(args.vrto3d_config, vr_cfg):
-                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (VRto3D-Config geschrieben; jetzt im Spiel/VR-Fenster Ctrl+Shift+F10 drücken = Neuladen, Piepton)")
+                            print(f">>> {edit_param} = {vr_cfg[edit_param]} (wrote VRto3D config; press Ctrl+Shift+F10 in the VR window to reload)")
                         else:
-                            print(">>> Fehler beim Schreiben der VRto3D-Config")
+                            print(">>> Could not write the VRto3D config")
                     else:
                         orientation.set_gain(orientation.gain - 0.1)
-                        print(f">>> Empfindlichkeit = {orientation.gain:.1f}")
+                        print(f">>> Sensitivity = {orientation.gain:.1f}")
                 elif ch in ("1", "2", "3"):
                     edit_param = ("depth", "convergence", "fov")[int(ch) - 1]
                     vr_cfg = load_vrto3d_config(args.vrto3d_config) or vr_cfg
                     if vr_cfg is not None:
-                        hint = " (+ = rauszoomen, - = reinzoomen)" if edit_param == "fov" else ""
-                        print(f">>> Bild-Param: {edit_param} = {vr_cfg.get(edit_param)}  (+/- ändern, 0 beenden){hint}")
+                        hint = " (+ zooms out, - zooms in)" if edit_param == "fov" else ""
+                        print(f">>> Image parameter: {edit_param} = {vr_cfg.get(edit_param)}  (+/- to change, 0 to stop){hint}")
                     else:
-                        print(f">>> Bild-Param: {edit_param} (Config nicht verfügbar)")
+                        print(f">>> Image parameter: {edit_param} (config not available)")
                 elif ch == "0":
                     edit_param = None
-                    print(">>> Bild-Param-Modus beendet")
+                    print(">>> Image-parameter editor off")
                 elif ch == "a":
                     cycle_axis()
                 elif ch == "y":
@@ -692,24 +695,20 @@ def main(argv=None):
     saved = load_state()
     if saved is not None and "yz_tilt_deg" in saved:
         args.yz_tilt = float(saved["yz_tilt_deg"])
-    if args.recenter_yaw_offset is None:
-        args.recenter_yaw_offset = float((saved or {}).get("yaw_offset_deg", 0.0))
+    # Fusion mode is the CLI value (default ref). A mode stored by the f key
+    # is not restored, so a shortcut that only passes the yaw offset always
+    # starts on the known-good pipeline.
     align_defaults = (args.recenter_yaw_offset, args.recenter_pitch_offset)
-    if args.fusion_mode is None:
-        args.fusion_mode = "ref"
-        if saved is not None and saved.get("fusion_mode") in ComplementaryOrientation.FUSION_MODES:
-            args.fusion_mode = saved["fusion_mode"]
-            print(f"(Fusion-Modus '{args.fusion_mode}' aus {state_path()} übernommen; "
-                  f"überschreiben mit --fusion-mode ref)")
-    print(f"Fusion-Modus: {args.fusion_mode}")
-    print(f"Ausgabe: {args.max_rate} Pakete/s ({args.sender}), Glättung: "
-          + (f"One-Euro {args.smooth:g} Hz / beta {args.smooth_beta:g}" if args.smooth > 0 else "aus"))
+    print(f"Fusion mode: {args.fusion_mode}")
+    print(f"Output: {args.max_rate} packets/s ({args.sender}), smoothing: "
+          + (f"One-Euro {args.smooth:g} Hz / beta {args.smooth_beta:g}" if args.smooth > 0 else "off"))
     if args.fusion_mode != "ref":
-        print("WARNUNG: Modus '%s' integriert Euler-Winkel getrennt – nach starkem Hoch/Runter-"
-              "Schauen bleibt die Welt schief. Empfohlen: --fusion-mode ref" % args.fusion_mode)
+        print("WARNING: mode '%s' integrates Euler angles separately. After looking "
+              "far up or down the world stays tilted. Use --fusion-mode ref."
+              % args.fusion_mode)
     elif args.no_gravity_ref:
-        print("Hinweis: --no-gravity-ref schaltet im ref-Modus die Schwerkraft-Korrektur ab "
-              "(Neigung kann driften). Für ref-Modus weglassen.")
+        print("Note: --no-gravity-ref turns off gravity correction in ref mode "
+              "(pitch and roll can drift). Leave it off for the default setup.")
 
     orientation = build_orientation(args)
     orientation.set_yaw_offset(args.recenter_yaw_offset)
@@ -720,9 +719,9 @@ def main(argv=None):
                                        float(saved.get("aligned_pitch_offset_deg", 0.0)))
         orientation.set_yaw_offset(orientation.aligned_offsets[0])
         orientation.set_pitch_offset(orientation.aligned_offsets[1])
-        print("Gespeicherte Ausrichtung geladen (Backspace = zurück auf Standard)")
-    print(f"Ausrichtung: Yaw {orientation.yaw_offset_deg:+.0f}°, Pitch {orientation.pitch_offset_deg:+.0f}° "
-          f"| Pfeile = ausrichten, Enter = speichern, F8/b = 180°")
+        print("Saved alignment loaded (Backspace restores this launch's offset)")
+    print(f"Alignment: yaw {orientation.yaw_offset_deg:+.0f} deg, pitch {orientation.pitch_offset_deg:+.0f} deg "
+          f"| arrows align, Enter saves, F8/b adds 180 deg")
     if not args.no_auto_recenter:
         orientation.recenter("auto")
 
@@ -771,10 +770,10 @@ def main(argv=None):
         time.sleep(0.1)
         if hotkey.registered:
             active = [n for n, (vk, _mod, _cb) in zip(hotkey_names, bindings) if vk]
-            print(f"Globale Hotkeys aktiv: {', '.join(active)}")
+            print(f"Global hotkeys: {', '.join(active)}")
         else:
             hotkey = None
-            print("(Hinweis: Keine Hotkeys konnten registriert werden)")
+            print("(Note: no global hotkeys could be registered)")
 
     print_help()
 
@@ -796,10 +795,10 @@ def main(argv=None):
             if not args.no_auto_recenter:
                 orientation.recenter("auto")
                 if orientation.fusion_mode == "ref":
-                    print("Recenter: automatisch, sobald die Brille aufrecht und still ist "
-                          "(auf dem Kopf geradeaus schauen; jederzeit F9 = neu ausrichten)")
+                    print("Recenter: automatic once the glasses are upright and still "
+                          "(look straight ahead while wearing them; F9 recenters again)")
                 print(
-                    f"Recenter (geradeaus): Initial ausgerichtet nach Kalibrierung "
+                    f"Recenter (straight ahead) after calibration "
                     f"[axis_map={orientation.axis_map} yaw_sign={'I' if orientation.invert_yaw else '+'} "
                     f"pitch_sign={'I' if orientation.invert_pitch else '+'} "
                     f"tilt={orientation.yz_tilt_deg:+.1f}deg]"
@@ -812,7 +811,7 @@ def main(argv=None):
             print(f"done: {result} frames processed")
             return
         except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
-            print(f"Verbindung verloren ({exc}) – Reconnect in 2 s ...")
+            print(f"Connection lost ({exc}) – reconnecting in 2 s ...")
             try:
                 sock.close()
             except (NameError, OSError):

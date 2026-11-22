@@ -1,10 +1,12 @@
 @echo off
+REM Head tracking for SteamVR home and Unity apps (yaw offset 180).
+REM For UEVR games use start_bridge_uevr.bat.
 setlocal
 cd /d "%~dp0.."
 if not exist ".venv\Scripts\python.exe" (
-  echo .venv fehlt - bitte einmalig anlegen: python -m venv .venv && .venv\Scripts\pip install pytest
+  echo Run install.bat first.
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" -m xreal_vr_bridge.cli --no-gravity-ref --recenter-hotkey F9 --axis-hotkey F10 --invert-yaw-hotkey F11 --invert-pitch-hotkey F12
+".venv\Scripts\python.exe" -m xreal_vr_bridge.cli --recenter-yaw-offset 180
 pause
