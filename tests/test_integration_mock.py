@@ -1,3 +1,4 @@
+import json
 import socket
 import struct
 import threading
@@ -5,7 +6,7 @@ import time
 
 from tools.mock_imu_server import build_frame
 
-from xreal_vr_bridge.cli import main
+from xreal_vr_bridge.cli import main, state_path
 from xreal_vr_bridge.opentrack import OPENTRACK_SIZE
 
 MOCK_PORT = 52980
@@ -25,7 +26,8 @@ def start_mock_server(rate=1000.0):
         gyro = (0.0, struct.unpack("<f", struct.pack("<f", 0.0))[0], 0.0)
         while not stop.is_set():
             try:
-                conn.sendall(build_frame(seq, gyro, (0.0, 0.0, 9.81), 25.0))
+                # Glasses level: sensor Y points down, so gravity is about -Y.
+                conn.sendall(build_frame(seq, gyro, (0.0, -9.81, 0.0), 25.0))
             except OSError:
                 break
             seq = (seq + 1) & 0xFFFFFF
@@ -60,7 +62,10 @@ def start_udp_listener():
     return sock, packets, t, udp_port
 
 
-def test_bridge_mock_to_udp():
+def test_bridge_mock_to_udp(capsys):
+    # A leftover state file must not pull the bridge off the default ref mode.
+    with open(state_path(), "w", encoding="utf-8") as handle:
+        json.dump({"fusion_mode": "legacy"}, handle)
     srv, stop = start_mock_server()
     sock, packets, listener, udp_port = start_udp_listener()
     try:
@@ -72,6 +77,9 @@ def test_bridge_mock_to_udp():
             "--calib-samples", "20",
             "--duration", "2.0",
         ])
+        captured = capsys.readouterr().out
+        assert "Fusion mode: ref" in captured
+        assert "Fusion mode: legacy" not in captured
         listener.join(timeout=6)
         assert len(packets) > 10
         for pkt in packets:

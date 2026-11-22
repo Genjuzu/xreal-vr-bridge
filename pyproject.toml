@@ -4,15 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xreal-vr-bridge"
-version = "0.1.0"
-description = "XREAL One/Pro (X1 chip) IMU -> OpenTrack UDP bridge for SteamVR / VRto3D / simulators"
+version = "0.2.0"
+description = "Head-tracked VR for the XREAL One Pro on Windows: glasses IMU to OpenTrack UDP for SteamVR / VRto3D and UEVR"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.scripts]
 xreal-bridge = "xreal_vr_bridge.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["xreal_vr_bridge*"]
